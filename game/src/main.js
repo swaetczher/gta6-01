@@ -248,12 +248,13 @@ function syncActorMeshes() {
   meshes.heli.visible = !!game.helicopter;
   if (game.helicopter) {
     // REPAIR-4: heli lama di (p.x+14, 26, p.z-10) terbang TERLALU TINGGI
-    // — elevasi ~45° dari kamera third-person, di atas tepi atas frame
-    // (tengah pandang -21° + setengah FOV 31° = tepi +10°), sehingga
-    // tidak pernah terlihat di shot cover. Posisi baru (p.x+6, 9,
-    // p.z-20): elevasi ~7° dari kamera, di dalam frame kanan atas —
-    // heli kejar-kejaran terbang rendah di depan pemain.
-    meshes.heli.position.set(p.x + 6, 9, p.z - 20);
+    // (elevasi ~45° dari kamera, di atas tepi atas frame) dan percobaan
+    // di (p.x+6, 9, p.z-20) malah bersembunyi DI BALIK banner objektif
+    // HUD (tengah atas). Posisi baru (p.x, 7, p.z-45): tepat di atas
+    // jalan 45 m di depan pemain — proyeksinya jatuh di tengah frame
+    // tepat di bawah banner, di atas titik lenyap jalan; ketinggian 7 m
+    // aman karena selalu di atas badan jalan (bukan di atas blok gedung).
+    meshes.heli.position.set(p.x, 7, p.z - 45);
     meshes.heli.rotation.y = game.time * 0.4;
   }
 }
@@ -387,10 +388,13 @@ function stageShot() {
     newGame(game);
     // M4: kejar-kejaran besar — pemain di Kancil, wanted 4 bintang.
     const car = world.cars.find((c) => c.model === 'Kancil' && !c.locked);
-    // REPAIR-4: Kancil tak terkunci pertama parkir di (-22,-58) — DI DALAM
-    // blok gedung, sehingga resolveCircle meruntuhkan kecepatan tiap frame
-    // (shot uji: 1 km/jam). Pindahkan mobil ke tengah jalan x=0 (z=44,
-    // persimpangan) menghadap -z (heading PI) supaya laju lurus di jalan.
+    // REPAIR-4: Kancil tak terkunci pertama parkir di (-22,-58) — lajur
+    // lurus ke selatan TANPA jalan, 52 m sampai tepi dunia. Gas penuh
+    // 2 detik membawanya ke z -105, lalu (karena sim TIDAK dibekukan)
+    // tiap frame menabrak batas dan kecepatan runtuh x0,25 → "1 km/jam"
+    // di shot uji. Pindahkan mobil ke tengah jalan x=0 (z=44,
+    // persimpangan) menghadap -z (heading PI) supaya laju lurus di jalan
+    // dan setelah 2 detik masih di tengah peta (z -3, 94 km/jam).
     car.x = 0;
     car.z = 44;
     car.heading = Math.PI;
@@ -444,15 +448,19 @@ function stageShot() {
   } else if (mode === 'end' || mode === 'vista') {
     newGame(game);
     game.missions.completed = ['M1', 'M2', 'M3', 'M4', 'M5'];
-    game.player.x = -58;
-    game.player.z = -58;
+    game.player.x = -52;
+    game.player.z = -52;
     game.player.money = 2450;
     // REPAIR-4: yaw lama (1,25 PI) menghadap kamera ke barat daya —
     // punggung kota tak terlihat, hanya bukit gelap. Yaw 0,25 PI menaruh
     // kamera di barat daya pemain menghadap timur laut: vista kota +
     // matahari fajar dari Bukit Mercusuar.
+    // REPAIR-4 ronde 2: pemain lama (-58,-58) tepat di atas gundukan
+    // mercusuar — gundukan menutupi >50% frame bawah. Geser ke (-52,-52)
+    // (tepi timur laut gundukan) + pitch 0,25 (kamera lebih mendatar)
+    // supaya porsi kota di frame membesar.
     yaw = Math.PI * 0.25 + (SEED - 1) * 0.05;
-    pitch = 0.5;
+    pitch = 0.25;
     // Sengaja TIDAK setScreen('complete'): overlay layar akhir akan
     // menutupi vista fajar. Banner saja yang tampil di atas kota.
     // REPAIR-4: updateGame TETAP memicu complete (semua misi selesai)

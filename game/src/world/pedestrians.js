@@ -1,109 +1,138 @@
-// ARUNIKA BAY — 28 pejalan kaki di trotoar (tulis ulang round 2).
-// Tiap pejalan kaki berjalan mondar-mandir di satu ruas trotoar, dengan
-// goyangan langkah (bob) dan arah hadap mengikuti arah jalan.
-import { PEDESTRIAN_COUNT, AVENUES, STREETS, mulberry32 } from './config.js';
+// pedestrians.js — Pejalan kaki ARUNIKA BAY: 28 warga yang berjalan di
+// trotoar mengelilingi blok kota. Pejalan pertama adalah sosok khusus
+// shot jalan kaki: topi kerucut + baju hijau (disebut "hero").
 
-const SHIRT_COLORS = [0x3f8a4a, 0xc23a2e, 0x2e6ac2, 0xe8b820, 0x8a4a9a, 0xd8d2c8, 0x3a8a8a];
-const SKIN_COLORS = [0xc89878, 0x8a5a3a, 0xe8b898, 0x6a4028];
+import { PEDESTRIAN_COUNT, PED_SPEED_MIN, PED_SPEED_MAX, CITY_SEED, mulberry32 } from './config.js';
 
-// Satu pejalan kaki: badan + kepala + topi kerucut opsional (khas Lentera).
-export function makePedestrianMesh(THREE, shirtColor, withConeHat = false) {
+// Warna baju warga.
+const SHIRT_COLORS = [0x3f8a4a, 0xd8b83a, 0x8a4a7a, 0x4a7a8a, 0xc86a3a, 0x7a8a3a, 0x9a4a4a, 0x5a5a7a];
+
+// Rakit satu pejalan: badan + kepala + (opsional) topi kerucut.
+export function makePedestrianMesh(THREE, shirtColor, withConeHat) {
   const group = new THREE.Group();
-  const shirt = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.9 });
-  const skin = new THREE.MeshStandardMaterial({
-    color: SKIN_COLORS[Math.floor(Math.random() * SKIN_COLORS.length)], roughness: 0.8,
-  });
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.32, 0.95, 8), shirt);
-  body.position.y = 0.85;
-  body.castShadow = true;
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.55, 1.0, 0.32),
+    new THREE.MeshStandardMaterial({ color: shirtColor }),
+  );
+  body.position.y = 0.95;
   group.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), skin);
-  head.position.y = 1.55;
-  head.castShadow = true;
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.26, 12, 10),
+    new THREE.MeshStandardMaterial({ color: 0xd8a878 }),
+  );
+  head.position.y = 1.68;
   group.add(head);
+  const legs = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.5, 0.28),
+    new THREE.MeshStandardMaterial({ color: 0x2e2e34 }),
+  );
+  legs.position.y = 0.25;
+  group.add(legs);
   if (withConeHat) {
     const hat = new THREE.Mesh(
-      new THREE.ConeGeometry(0.42, 0.5, 12),
-      new THREE.MeshStandardMaterial({ color: 0xd8b858, roughness: 0.7 }),
+      new THREE.ConeGeometry(0.42, 0.55, 12),
+      new THREE.MeshStandardMaterial({ color: 0xc8a83a }),
     );
-    hat.position.y = 1.85;
-    hat.castShadow = true;
+    hat.position.y = 2.05;
     group.add(hat);
-    group.userData.coneHat = true;
   }
-  const legMat = new THREE.MeshStandardMaterial({ color: 0x2e2a33, roughness: 1 });
-  for (const sx of [-0.12, 0.12]) {
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.5, 6), legMat);
-    leg.position.set(sx, 0.25, 0);
-    group.add(leg);
-  }
-  group.userData.shirtColor = shirtColor;
   return group;
 }
 
-// Lahirkan 28 pejalan kaki di ruas trotoar acak (deterministik seed 11).
-// Pejalan kaki #0 memakai topi kerucut + baju hijau — dipakai shot foot.
-export function spawnPedestrians(THREE, scene) {
-  const rng = mulberry32(11);
-  const peds = [];
+// Rute jalan kaki: persegi kecil mengelilingi satu blok (trotoar).
+function blockLoop(cx, cz, half) {
+  return [
+    { x: cx - half, z: cz - half },
+    { x: cx + half, z: cz - half },
+    { x: cx + half, z: cz + half },
+    { x: cx - half, z: cz + half },
+  ];
+}
+
+export function buildPedestrians(THREE, scene) {
+  const rand = mulberry32(CITY_SEED + 31);
+  const list = [];
+  const blocks = [
+    { x: -30, z: -90 },
+    { x: 30, z: -90 },
+    { x: 90, z: -90 },
+    { x: -90, z: -30 },
+    { x: 30, z: -30 },
+    { x: 90, z: -30 },
+    { x: -30, z: 30 },
+    { x: 30, z: 30 },
+    { x: 90, z: 30 },
+    { x: -30, z: 90 },
+    { x: 30, z: 90 },
+    { x: 90, z: 90 },
+  ];
   for (let i = 0; i < PEDESTRIAN_COUNT; i++) {
-    const horizontal = rng() > 0.5;
-    const road = horizontal
-      ? STREETS[Math.floor(rng() * STREETS.length)]
-      : AVENUES[Math.floor(rng() * AVENUES.length)];
-    const along = -100 + rng() * 200;
-    const side = (rng() > 0.5 ? 1 : -1) * (6.5 + rng() * 2);
-    const x = horizontal ? along : road + side;
-    const z = horizontal ? road + side : along;
-    const coneHat = i === 0;
-    const shirt = coneHat ? 0x3f8a4a : SHIRT_COLORS[Math.floor(rng() * SHIRT_COLORS.length)];
-    const mesh = makePedestrianMesh(THREE, shirt, coneHat);
-    mesh.position.set(x, 0, z);
+    const isHero = i === 0;
+    const shirt = isHero ? 0x3f8a4a : SHIRT_COLORS[i % SHIRT_COLORS.length];
+    const mesh = makePedestrianMesh(THREE, shirt, isHero);
+    const block = blocks[i % blocks.length];
+    const loop = blockLoop(block.x, block.z, 14 + rand() * 6);
+    const startIdx = Math.floor(rand() * loop.length);
+    const start = loop[startIdx];
+    mesh.position.set(start.x, 0, start.z);
     scene.add(mesh);
-    peds.push({
+    list.push({
       mesh,
-      x,
-      z,
-      heading: rng() * Math.PI * 2,
-      speed: 0.9 + rng() * 0.9,
-      phase: rng() * Math.PI * 2,
-      horizontal,
-      road,
-      side,
-      along,
-      dir: rng() > 0.5 ? 1 : -1,
-      coneHat,
+      x: start.x,
+      z: start.z,
+      heading: rand() * Math.PI * 2,
+      speed: PED_SPEED_MIN + rand() * (PED_SPEED_MAX - PED_SPEED_MIN),
+      loop,
+      // Target pertama = waypoint BERIKUTNYA, bukan posisi awal sendiri.
+      wp: (startIdx + 1) % loop.length,
+      hero: isHero,
     });
   }
-  return peds;
-}
 
-// Majukan pejalan kaki di ruasnya; berbalik di ujung jalan (-110 / 110).
-export function updatePedestrians(peds, dt, t) {
-  for (const p of peds) {
-    p.along += p.dir * p.speed * dt;
-    if (p.along > 110) {
-      p.along = 110;
-      p.dir = -1;
-    } else if (p.along < -110) {
-      p.along = -110;
-      p.dir = 1;
+  function update(dt) {
+    for (const p of list) {
+      const target = p.loop[p.wp];
+      const dx = target.x - p.x;
+      const dz = target.z - p.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 0.4) {
+        p.wp = (p.wp + 1) % p.loop.length;
+        continue;
+      }
+      const step = p.speed * dt;
+      p.x += (dx / dist) * step;
+      p.z += (dz / dist) * step;
+      p.heading = Math.atan2(-dz, dx);
+      p.mesh.position.set(p.x, 0, p.z);
+      p.mesh.rotation.y = p.heading - Math.PI / 2;
     }
-    if (p.horizontal) {
-      p.x = p.along;
-      p.z = p.road + p.side;
-      p.heading = p.dir > 0 ? 0 : Math.PI;
-    } else {
-      p.x = p.road + p.side;
-      p.z = p.along;
-      p.heading = p.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
-    }
-    p.mesh.position.set(p.x, Math.abs(Math.sin(t * 6 + p.phase)) * 0.06, p.z);
-    p.mesh.rotation.y = p.heading;
   }
+
+  return { list, update, hero: list[0] };
 }
 
-// Pejalan kaki bertopi kerucut (dipakai staging shot foot).
-export function findConeHatPedestrian(peds) {
-  return peds.find((p) => p.coneHat) || peds[0] || null;
+// ---- Tambahan: parkir pejalan hero untuk staging (revisi ke-2) ----
+
+// Letakkan pejalan hero (topi kerucut, baju hijau) di titik shot jalan
+// kaki dan hadapkan ke kamera. Rutenya dijeda dengan menaruh waypoint
+// berikutnya tepat di posisinya (dipakai bersama freezeStreetLife).
+export function placeHeroPedestrian(pedestrians, x, z, heading) {
+  const hero = pedestrians.hero;
+  hero.x = x;
+  hero.z = z;
+  hero.heading = heading;
+  hero.loop = [{ x, z }];
+  hero.wp = 0;
+  hero.mesh.position.set(x, 0, z);
+  hero.mesh.rotation.y = heading - Math.PI / 2;
+  return hero;
+}
+
+// Hitung pejalan yang berada dalam radius r dari titik (x, z).
+export function pedestriansNear(list, x, z, r) {
+  return list.filter((p) => {
+    const dx = p.x - x;
+    const dz = p.z - z;
+    return dx * dx + dz * dz < r * r;
+  });
 }

@@ -1,255 +1,151 @@
-// combat.js — Tarung ARUNIKA BAY.
-//
-// Dua senjata Bara:
-//   fists  — "Tinju": jarak dekat (2,2 m), damage 10, tanpa peluru.
-//   pistol — "Pistol Rakitan": jarak 26 m, damage 25, magasin 12/48.
-//
-// Musuh juga menyerang balik: preman memukul dari dekat (diatur
-// enemies.js), dan — begitu Bara bersenjata api — musuh menembak dari jauh
-// dengan jeda 1,6 detik per tembakan. Modul ini memegang senjata aktif,
-// amunisi, dan penyelesaian serangan; targetnya berupa data biasa supaya
-// tes Node bisa memanggilnya tanpa renderer.
+// combat.js — Tinju dan Pistol Rakitan Bara Kelana.
+// Tinju gratis, jarak dekat, tanpa amunisi. Pistol Rakitan menembak
+// jauh, memakai peluru magasin 12/48, dan butuh isi ulang. Modul ini
+// juga mengatur tembakan balasan preman (tiap 1,6 detik) dan masa
+// kebal singkat Bara setelah kena pukul (0,6 detik).
 
-export const WEAPON_FISTS = 'fists';
-export const WEAPON_PISTOL = 'pistol';
-export const WEAPONS = [WEAPON_FISTS, WEAPON_PISTOL];
-
-// Nama yang tampil di HUD.
-export const WEAPON_LABELS = {
-  [WEAPON_FISTS]: 'Tinju',
-  [WEAPON_PISTOL]: 'Pistol Rakitan',
+export const WEAPONS = {
+  fists: { name: 'Tinju', range: 2.3, damage: 12, rate: 0.45, ammo: Infinity },
+  pistol: { name: 'Pistol Rakitan', range: 26, damage: 25, rate: 0.28, ammo: 12 },
 };
-
-// Jangkauan (meter), damage, dan jeda antar serangan (detik).
-export const WEAPON_STATS = {
-  [WEAPON_FISTS]: { range: 2.2, damage: 10, cooldown: 0.45, ammoPerShot: 0 },
-  [WEAPON_PISTOL]: { range: 26, damage: 25, cooldown: 0.35, ammoPerShot: 1 },
-};
-
-// Magasin pistol: 12 peluru terisi, 48 cadangan.
-export const PISTOL_MAG_SIZE = 12;
+export const PISTOL_MAG = 12;
 export const PISTOL_RESERVE_START = 48;
-
-// Musuh menembak Bara tiap 1,6 detik bila dalam jarak tembak.
+export const IFRAMES = 0.6;
 export const ENEMY_SHOOT_COOLDOWN = 1.6;
-export const ENEMY_SHOOT_RANGE = 22;
-export const ENEMY_SHOOT_DAMAGE = 6;
+export const ENEMY_SHOOT_RANGE = 30;
+export const RELOAD_TIME = 1.2;
 
-// Bara kebal sesaat setelah kena hit (detik) supaya tidak langsung mati.
-export const PLAYER_HURT_IFRAMES = 0.6;
-
-/** Jarak datar (XZ) antara dua titik. */
-function flatDistance(ax, az, bx, bz) {
-  const dx = ax - bx;
-  const dz = az - bz;
-  return Math.sqrt(dx * dx + dz * dz);
-}
-
-/** Apakah `name` senjata yang dikenal. */
-export function isWeapon(name) {
-  return WEAPONS.includes(name);
-}
-
-/** Label HUD untuk senjata. */
-export function weaponLabel(name) {
-  return WEAPON_LABELS[name] || WEAPON_LABELS[WEAPON_FISTS];
-}
-
-/**
- * Manajer tarung.
- *
- * @param {object} opts
- * @param {(event:object)=>void} [opts.onEvent] dipanggil saat senjata
- *   berganti, tembakan kosong, musuh tumbang, atau Bara tertembak
- * @param {(damage:number)=>void} [opts.onPlayerDamage] dipanggil saat Bara
- *   kena damage dari tembakan musuh
- * @param {()=>{x:number,z:number}} [opts.getPlayerPos] posisi Bara
- */
 export function createCombat(opts = {}) {
-  const emit = typeof opts.onEvent === 'function' ? opts.onEvent : null;
-  const hurtPlayer = typeof opts.onPlayerDamage === 'function' ? opts.onPlayerDamage : null;
-  const getPlayerPos =
-    typeof opts.getPlayerPos === 'function' ? opts.getPlayerPos : () => ({ x: 0, z: 0 });
+  const getPlayer = typeof opts.getPlayer === 'function' ? opts.getPlayer : () => null;
+  const enemies = opts.enemies || null;
+  const onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : null;
+  const onPlayerHurt = typeof opts.onPlayerHurt === 'function' ? opts.onPlayerHurt : null;
+  const onEnemyDown = typeof opts.onEnemyDown === 'function' ? opts.onEnemyDown : null;
+  let weapon = 'fists';
+  let ammo = PISTOL_MAG;
+  let reserve = PISTOL_RESERVE_START;
+  let attackTimer = 0;
+  let reloadTimer = 0;
+  let invulnerableTimer = 0;
+  let enemyShootTimer = 0;
 
-  let weapon = WEAPON_FISTS;
-  let ammo = 0;
-  let reserveAmmo = 0;
-  let cooldownTimer = 0;
-  let hurtTimer = 0;
-  let defeated = 0;
+  function emit(type, payload) {
+    if (onEvent) onEvent({ type, ...payload });
+  }
 
   const api = {
-    /** Senjata aktif: 'fists' | 'pistol'. */
-    get weapon() {
-      return weapon;
-    },
-    /** Peluru di magasin (0 untuk tinju). */
-    get ammo() {
-      return ammo;
-    },
-    /** Peluru cadangan pistol. */
-    get reserveAmmo() {
-      return reserveAmmo;
-    },
-    /** Label HUD senjata aktif. */
-    get weaponLabel() {
-      return weaponLabel(weapon);
-    },
-    /** Jumlah musuh yang ditumbangkan lewat combat ini. */
-    get defeated() {
-      return defeated;
-    },
-    /** Apakah Bara sedang dalam jeda kebal sesaat. */
-    get isInvulnerable() {
-      return hurtTimer > 0;
-    },
+    get weapon() { return weapon; },
+    get weaponName() { return WEAPONS[weapon].name; },
+    get ammo() { return weapon === 'pistol' ? ammo : Infinity; },
+    get reserve() { return reserve; },
+    get reloading() { return reloadTimer > 0; },
+    get invulnerable() { return invulnerableTimer > 0; },
 
-    /** Ganti senjata. Pistol butuh amunisi — bila kosong, tetap tinju. */
-    setWeapon(name) {
-      if (!isWeapon(name)) return weapon;
-      if (name === WEAPON_PISTOL && ammo <= 0 && reserveAmmo <= 0) {
-        return weapon;
-      }
-      if (name !== weapon) {
-        weapon = name;
-        if (emit) emit({ type: 'weapon-change', weapon });
-      }
+    setWeapon(next) {
+      if (!WEAPONS[next]) return weapon;
+      weapon = next;
+      reloadTimer = 0;
+      attackTimer = 0;
       return weapon;
     },
 
-    /** Isi ulang pistol dari cadangan (maksimal 12). */
-    reload() {
-      if (weapon !== WEAPON_PISTOL) return false;
-      if (ammo >= PISTOL_MAG_SIZE || reserveAmmo <= 0) return false;
-      const need = PISTOL_MAG_SIZE - ammo;
-      const take = Math.min(need, reserveAmmo);
-      ammo += take;
-      reserveAmmo -= take;
-      if (emit) emit({ type: 'reload', ammo, reserveAmmo });
+    // Lukai Bara, tapi hormati masa kebal. Kembalikan true bila luka masuk.
+    hurtPlayer(amount) {
+      if (invulnerableTimer > 0) return false;
+      const player = getPlayer();
+      if (!player) return false;
+      invulnerableTimer = IFRAMES;
+      const dmg = Math.max(1, Math.round(amount));
+      player.health = Math.max(0, (player.health ?? 100) - dmg);
+      if (onPlayerHurt) onPlayerHurt(dmg, player.health);
+      emit('player-hurt', { damage: dmg, health: player.health });
       return true;
     },
 
-    /** Tambah amunisi pistol (mis. dari peti / hadiah misi). */
-    addAmmo(amount) {
-      const n = Math.max(0, Math.floor(amount) || 0);
-      if (n <= 0) return reserveAmmo;
-      reserveAmmo += n;
-      if (weapon === WEAPON_FISTS && ammo <= 0) {
-        // Begitu punya peluru, pistol bisa dipakai.
-        ammo = Math.min(PISTOL_MAG_SIZE, reserveAmmo);
-        reserveAmmo -= ammo;
-        weapon = WEAPON_PISTOL;
-        if (emit) emit({ type: 'weapon-change', weapon });
-      }
-      return reserveAmmo;
-    },
-
-    /** Beri pistol rakitan ke Bara (hadiah awal M3). */
-    givePistol() {
-      ammo = PISTOL_MAG_SIZE;
-      reserveAmmo = PISTOL_RESERVE_START;
-      weapon = WEAPON_PISTOL;
-      if (emit) emit({ type: 'weapon-change', weapon });
-      return weapon;
-    },
-
-    /**
-     * Serang dari posisi Bara ke arah `targets` (musuh/polisi berupa
-     * `{x, z, alive}` beserta `damage(target, n)` bila tersedia).
-     * @param {{x:number,z:number}} from posisi Bara
-     * @param {Array} targets daftar target yang bisa diserang
-     * @param {(target:object, damage:number)=>boolean} damageFn cara memberi damage
-     * @returns {object|null} target yang kena, atau null
-     */
-    attack(from, targets, damageFn) {
-      if (cooldownTimer > 0) return null;
-      const stats = WEAPON_STATS[weapon];
-      if (weapon === WEAPON_PISTOL) {
-        if (ammo <= 0) {
-          if (emit) emit({ type: 'dry-fire', weapon });
-          this.reload();
-          cooldownTimer = stats.cooldown;
-          return null;
-        }
-        ammo -= stats.ammoPerShot;
-      }
-      cooldownTimer = stats.cooldown;
-      const fx = from ? from.x || 0 : 0;
-      const fz = from ? from.z || 0 : 0;
-      let best = null;
-      let bestDist = Infinity;
-      for (const target of targets || []) {
-        if (target && target.alive === false) continue;
-        const d = flatDistance(fx, fz, target.x || 0, target.z || 0);
-        if (d <= stats.range && d < bestDist) {
-          bestDist = d;
-          best = target;
-        }
-      }
-      if (!best) return null;
-      const apply = typeof damageFn === 'function' ? damageFn : null;
-      const down = apply ? apply(best, stats.damage) : false;
-      if (down) {
-        defeated++;
-        if (emit) emit({ type: 'target-down', weapon, defeated });
-      } else if (emit) {
-        emit({ type: 'hit', weapon, damage: stats.damage });
-      }
-      return best;
-    },
-
-    /** Bara kena damage langsung (pukulan / tembakan) — hormati iframes. */
-    damagePlayer(amount) {
-      if (hurtTimer > 0) return false;
-      const n = Number(amount) || 0;
-      if (n <= 0) return false;
-      hurtTimer = PLAYER_HURT_IFRAMES;
-      if (hurtPlayer) hurtPlayer(n);
-      if (emit) emit({ type: 'player-hurt', damage: n });
+    // Isi ulang magasin pistol dari cadangan. Kembalikan true bila mulai isi.
+    startReload() {
+      if (weapon !== 'pistol' || reloadTimer > 0) return false;
+      if (ammo >= PISTOL_MAG || reserve <= 0) return false;
+      reloadTimer = RELOAD_TIME;
+      emit('reload-start', {});
       return true;
     },
 
-    /**
-     * Musuh yang hidup menembak Bara tiap 1,6 detik bila dalam jarak.
-     * @param {Array} enemies daftar musuh `{x, z, alive, shootTimer}`
-     */
-    enemyFire(dt, enemies) {
-      const step = Math.max(0, dt || 0);
-      const pos = getPlayerPos();
-      for (const enemy of enemies || []) {
-        if (!enemy || !enemy.alive) continue;
-        enemy.shootTimer = Math.max(0, (enemy.shootTimer || 0) - step);
-        const d = flatDistance(enemy.x || 0, enemy.z || 0, pos.x || 0, pos.z || 0);
-        if (d <= ENEMY_SHOOT_RANGE && enemy.shootTimer <= 0) {
-          enemy.shootTimer = ENEMY_SHOOT_COOLDOWN;
-          if (emit) emit({ type: 'enemy-shot', kind: enemy.kind || 'grunt' });
-          this.damagePlayer(ENEMY_SHOOT_DAMAGE);
+    // Satu serangan ke arah depan Bara. Kembalikan musuh yang kena, atau null.
+    attack() {
+      if (attackTimer > 0 || reloadTimer > 0) return null;
+      const player = getPlayer();
+      if (!player || !enemies) return null;
+      const def = WEAPONS[weapon];
+      if (weapon === 'pistol' && ammo <= 0) {
+        api.startReload();
+        return null;
+      }
+      attackTimer = def.rate;
+      if (weapon === 'pistol') ammo -= 1;
+
+      if (weapon === 'pistol' && ammo <= 0) api.startReload();
+      if (weapon === 'pistol') emit('shot-fired', { ammo, reserve });
+      // Cari musuh hidup terdekat di dalam jangkauan senjata.
+      const target = enemies.nearestAlive(player.x, player.z, def.range);
+      if (!target) return null;
+      const down = enemies.damage(target, def.damage);
+      emit('hit', { enemy: target, damage: def.damage, down });
+      if (down && onEnemyDown) onEnemyDown(target);
+      return target;
+    },
+
+    // Tembakan balasan: preman menembak tiap 1,6 detik bila Bara dekat.
+    enemyFire(dt) {
+      if (!enemies) return;
+      enemyShootTimer -= Math.max(0, dt);
+      if (enemyShootTimer > 0) return;
+      enemyShootTimer = ENEMY_SHOOT_COOLDOWN;
+      const player = getPlayer();
+      if (!player) return;
+      const shooter = enemies.nearestAlive(player.x, player.z, ENEMY_SHOOT_RANGE);
+      if (!shooter) return;
+      emit('enemy-shot', { enemy: shooter });
+      api.hurtPlayer(6);
+    },
+
+    // Maju satu frame: timer serangan, isi ulang, masa kebal, tembakan musuh.
+    update(dt, input) {
+      const step = Math.max(0, dt);
+      attackTimer = Math.max(0, attackTimer - step);
+      invulnerableTimer = Math.max(0, invulnerableTimer - step);
+      if (reloadTimer > 0) {
+        reloadTimer -= step;
+        if (reloadTimer <= 0) {
+          reloadTimer = 0;
+          const need = PISTOL_MAG - ammo;
+          const take = Math.min(need, reserve);
+          ammo += take;
+          reserve -= take;
+          emit('reload-done', { ammo, reserve });
         }
       }
-    },
-
-    /** Majukan semua timer satu frame. */
-    update(dt) {
-      const step = Math.max(0, dt || 0);
-      cooldownTimer = Math.max(0, cooldownTimer - step);
-      hurtTimer = Math.max(0, hurtTimer - step);
-    },
-
-    /** Cuplikan untuk save game. */
-    snapshot() {
-      return { weapon, ammo, reserveAmmo, defeated };
-    },
-
-    /** Pulihkan dari save game. */
-    restore(data) {
-      if (!data) return;
-      if (isWeapon(data.weapon)) weapon = data.weapon;
-      if (typeof data.ammo === 'number') ammo = Math.max(0, Math.floor(data.ammo));
-      if (typeof data.reserveAmmo === 'number') {
-        reserveAmmo = Math.max(0, Math.floor(data.reserveAmmo));
+      if (input && keyDownCombat(input)) {
+        api.attack();
       }
-      if (typeof data.defeated === 'number') defeated = Math.max(0, Math.floor(data.defeated));
+      api.enemyFire(step);
+      return { weapon, ammo, reserve };
     },
   };
+
   return api;
+}
+
+// Tombol serang: spasi, klik, atau boolean attack — alias yang sama
+// dengan yang dipakai player.js, ditulis ulang di sini supaya combat
+// tidak bergantung pada modul pemain.
+function keyDownCombat(input) {
+  if (!input) return false;
+  if (input.keys instanceof Set) {
+    return input.keys.has('attack') || input.keys.has('Space') || input.keys.has(' ');
+  }
+  if (input.keys && typeof input.keys === 'object') {
+    return Boolean(input.keys.attack || input.keys.Space || input.keys[' ']);
+  }
+  return Boolean(input.attack || input.Space || input[' ']);
 }

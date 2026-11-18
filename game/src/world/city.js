@@ -1,370 +1,220 @@
-// ARUNIKA BAY — kota fajar: tanah, jalan, zebra, gedung, pohon, lampu,
-// plaza/air mancur, kanal Pasar Terapung, dermaga + laut teal (round 2).
-// Dibangun deterministik (mulberry32 seed 7) supaya tiap load identik.
-import { PALETTE, WORLD, AVENUES, STREETS, LANDMARKS, mulberry32 } from './config.js';
-import { addLampLight } from './lighting.js';
+// city.js — Geometri kota ARUNIKA BAY: tanah, laut, jalan, gedung,
+// alun-alun + air mancur, gudang pelabuhan + kontainer, pohon, lampu.
+// Satu-satunya builder kota; dipanggil world/index.js. Mengembalikan
+// collider, graf jalan (untuk traffic), dan pegangan landmark.
 
-function flat(THREE, w, d, color, x, y, z, ry = 0) {
-  const m = new THREE.Mesh(
-    new THREE.PlaneGeometry(w, d),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.95 }),
-  );
-  m.rotation.x = -Math.PI / 2;
-  m.rotation.z = ry;
-  m.position.set(x, y, z);
-  m.receiveShadow = true;
-  return m;
+import {
+  PALETTE,
+  ROAD_WIDTH,
+  ROAD_Z,
+  ROAD_X,
+  ROAD_EXTENT,
+  FOUNTAIN,
+  WAREHOUSE,
+  DOCK,
+  SEA_Z,
+  ZEBRA,
+  CITY_SEED,
+  BUILDING_HEIGHT_MIN,
+  BUILDING_HEIGHT_MAX,
+  LAMP_SPACING,
+  TREE_SPACING,
+  mulberry32,
+} from './config.js';
+import { makeStreetLamp } from './lighting.js';
+
+function box(THREE, w, h, d, color, x, y, z) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mat = new THREE.MeshStandardMaterial({ color });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  return mesh;
 }
 
-function box(THREE, w, h, d, color, x, y, z, ry = 0) {
-  const m = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.85 }),
-  );
-  m.position.set(x, y + h / 2, z);
-  m.rotation.y = ry;
-  m.castShadow = true;
-  m.receiveShadow = true;
-  return m;
+function flat(THREE, w, d, color, x, z, y = 0.02) {
+  const geo = new THREE.PlaneGeometry(w, d);
+  const mat = new THREE.MeshStandardMaterial({ color });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, y, z);
+  return mesh;
 }
 
-// Tanah dasar + trotoar blok + jalan aspal + garis tengah + zebra.
-function buildGroundAndRoads(THREE, scene, colliders) {
-  const g = new THREE.Group();
-  g.add(flat(THREE, WORLD.size * 2.4, WORLD.size * 2.4, PALETTE.ground, 0, -0.05, 20));
-  // Trotoar: satu bidang terang per blok di antara jalan.
-  for (let ix = 0; ix < AVENUES.length - 1; ix++) {
-    for (let iz = 0; iz < STREETS.length - 1; iz++) {
-      const x0 = AVENUES[ix] + WORLD.roadHalf;
-      const x1 = AVENUES[ix + 1] - WORLD.roadHalf;
-      const z0 = STREETS[iz] + WORLD.roadHalf;
-      const z1 = STREETS[iz + 1] - WORLD.roadHalf;
-      const cx = (x0 + x1) / 2;
-      const cz = (z0 + z1) / 2;
-      g.add(flat(THREE, x1 - x0, z1 - z0, PALETTE.sidewalk, cx, 0.02, cz));
-    }
+// Graf jalan untuk traffic: ruas lurus antar persimpangan.
+export function buildRoadGraph() {
+  const segments = [];
+  for (const z of ROAD_Z) {
+    segments.push({ ax: -ROAD_EXTENT, az: z, bx: ROAD_EXTENT, bz: z });
   }
-  // Aspal: jalur utara-selatan (avenue) + timur-barat (street).
-  for (const x of AVENUES) {
-    g.add(flat(THREE, WORLD.roadWidth, WORLD.size, PALETTE.road, x, 0.03, 0));
+  for (const x of ROAD_X) {
+    segments.push({ ax: x, az: -ROAD_EXTENT, bx: x, bz: ROAD_EXTENT });
   }
-  for (const z of STREETS) {
-    g.add(flat(THREE, WORLD.size, WORLD.roadWidth, PALETTE.road, 0, 0.04, z));
-  }
-  // Garis tengah putus-putus di tiap jalan.
-  for (const x of AVENUES) {
-    for (let z = -120; z <= 120; z += 8) {
-      g.add(flat(THREE, 0.4, 3.4, PALETTE.roadLine, x, 0.06, z));
-    }
-  }
-  for (const z of STREETS) {
-    for (let x = -120; x <= 120; x += 8) {
-      g.add(flat(THREE, 3.4, 0.4, PALETTE.roadLine, x, 0.06, z));
-    }
-  }
-  // Zebra cross di tiap persimpangan (4 sisi).
-  for (const x of AVENUES) {
-    for (const z of STREETS) {
-      for (let i = -2; i <= 2; i++) {
-        g.add(flat(THREE, 1.1, 3.6, PALETTE.zebra, x + i * 1.7, 0.07, z - 6.4));
-        g.add(flat(THREE, 1.1, 3.6, PALETTE.zebra, x + i * 1.7, 0.07, z + 6.4));
-        g.add(flat(THREE, 3.6, 1.1, PALETTE.zebra, x - 6.4, 0.07, z + i * 1.7));
-        g.add(flat(THREE, 3.6, 1.1, PALETTE.zebra, x + 6.4, 0.07, z + i * 1.7));
-      }
-    }
-  }
-  scene.add(g);
-  return g;
+  return { segments };
 }
 
-// Gedung: satu-dua kotak per blok, tinggi 8–26 m, jendela menyala fajar.
-// Gedung TIDAK dibangun di plaza (0,0), kanal (z 56–76), dan dermaga.
-function buildBuildings(THREE, scene, rng, colliders) {
-  const g = new THREE.Group();
-  const palette = [PALETTE.buildingA, PALETTE.buildingB, PALETTE.buildingC, PALETTE.buildingD];
-  const winMat = new THREE.MeshStandardMaterial({
-    color: PALETTE.windowLit, emissive: PALETTE.windowLit, emissiveIntensity: 0.7,
-  });
-  const winDark = new THREE.MeshStandardMaterial({ color: PALETTE.windowDark });
-  for (let ix = 0; ix < AVENUES.length - 1; ix++) {
-    for (let iz = 0; iz < STREETS.length - 1; iz++) {
-      const cx = (AVENUES[ix] + AVENUES[ix + 1]) / 2;
-      const cz = (STREETS[iz] + STREETS[iz + 1]) / 2;
-      // Lewati plaza tengah, jalur kanal, dan area gudang/dermaga selatan.
-      if (Math.abs(cx) < 25 && Math.abs(cz) < 25) continue;
-      if (cz > 52 && cz < 78) continue;
-      if (cz > 88) continue;
-      // Lewati alun-alun lentera Kampung Lentera (-52,-52): ruang terbuka.
-      if (Math.hypot(cx + 52, cz + 52) < 26) continue;
-      const count = 1 + Math.floor(rng() * 2);
-      for (let b = 0; b < count; b++) {
-        // Gedung dijepit di dalam blok dengan jarak aman 4 m dari tepi
-        // trotoar (9 m dari sumbu jalan) — fasad gedung tidak boleh
-        // menempel ke jalan dan menutup frame kamera kejar.
-        const bx0 = AVENUES[ix] + WORLD.roadHalf;
-        const bx1 = AVENUES[ix + 1] - WORLD.roadHalf;
-        const bz0 = STREETS[iz] + WORLD.roadHalf;
-        const bz1 = STREETS[iz + 1] - WORLD.roadHalf;
-        let w = 12 + rng() * 10;
-        let d = 12 + rng() * 10;
-        w = Math.min(w, (bx1 - bx0) - 8);
-        d = Math.min(d, (bz1 - bz0) - 8);
-        const h = 8 + rng() * 18;
-        const ox = (rng() - 0.5) * 8;
-        const oz = (rng() - 0.5) * 8;
-        const bx = Math.max(bx0 + w / 2 + 4, Math.min(bx1 - w / 2 - 4, cx + ox));
-        const bz = Math.max(bz0 + d / 2 + 4, Math.min(bz1 - d / 2 - 4, cz + oz));
-        const color = palette[Math.floor(rng() * palette.length)];
-        g.add(box(THREE, w, h, d, color, bx, 0, bz));
-        g.add(box(THREE, w + 0.6, 0.8, d + 0.6, PALETTE.roof, bx, h, bz));
-        // Jendela menyala di dua sisi hadap jalan.
-        const rows = Math.max(2, Math.floor(h / 4));
-        for (let r = 0; r < rows; r++) {
-          for (let cI = -1; cI <= 1; cI++) {
-            const lit = rng() > 0.45;
-            const win = new THREE.Mesh(
-              new THREE.PlaneGeometry(1.6, 2.0),
-              lit ? winMat : winDark,
-            );
-            win.position.set(bx + cI * (w / 3.4), 3 + r * 3.4, bz + d / 2 + 0.06);
-            g.add(win);
-          }
-        }
-        colliders.push({ x: bx, z: bz, w, d });
-      }
-    }
-  }
-  scene.add(g);
-  return g;
-}
-
-// Pohon rindang di tepi trotoar + lampu jalan menyala di tiap persimpangan.
-function buildTreesAndLamps(THREE, scene, rng, colliders) {
-  const g = new THREE.Group();
-  const trunkMat = new THREE.MeshStandardMaterial({ color: PALETTE.treeTrunk, roughness: 1 });
-  const leafMats = [
-    new THREE.MeshStandardMaterial({ color: PALETTE.treeLeaf, roughness: 1 }),
-    new THREE.MeshStandardMaterial({ color: PALETTE.treeLeaf2, roughness: 1 }),
-  ];
-  for (let ix = 0; ix < AVENUES.length - 1; ix++) {
-    for (let iz = 0; iz < STREETS.length - 1; iz++) {
-      const cx = (AVENUES[ix] + AVENUES[ix + 1]) / 2;
-      const cz = (STREETS[iz] + STREETS[iz + 1]) / 2;
-      if (Math.abs(cx) < 25 && Math.abs(cz) < 25) continue;
-      if (cz > 52 && cz < 78) continue;
-      // Alun-alun lentera Kampung Lentera (-52,-52): tanpa pohon.
-      if (Math.hypot(cx + 52, cz + 52) < 26) continue;
-      const trees = 1 + Math.floor(rng() * 2);
-      for (let t = 0; t < trees; t++) {
-        const tx = cx + (rng() - 0.5) * 22;
-        const tz = cz + (rng() - 0.5) * 22;
-        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.4, 2.4, 7), trunkMat);
-        trunk.position.set(tx, 1.2, tz);
-        trunk.castShadow = true;
-        g.add(trunk);
-        const leaf = new THREE.Mesh(
-          new THREE.SphereGeometry(1.6 + rng() * 0.9, 10, 8),
-          leafMats[Math.floor(rng() * leafMats.length)],
-        );
-        leaf.position.set(tx, 3.4 + rng() * 0.8, tz);
-        leaf.castShadow = true;
-        g.add(leaf);
-        colliders.push({ x: tx, z: tz, r: 0.6 });
-      }
-    }
-  }
-  // Lampu jalan di keempat sudut tiap persimpangan (satu lampu per simpang).
-  for (const x of AVENUES) {
-    for (const z of STREETS) {
-      const lx = x + 6.2;
-      const lz = z + 6.2;
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.12, 0.16, 5.4, 7),
-        new THREE.MeshStandardMaterial({ color: PALETTE.lampPole }),
-      );
-      pole.position.set(lx, 2.7, lz);
-      pole.castShadow = true;
-      g.add(pole);
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.42, 10, 8),
-        new THREE.MeshStandardMaterial({
-          color: PALETTE.lampGlow, emissive: PALETTE.lampGlow, emissiveIntensity: 1.6,
-        }),
-      );
-      bulb.position.set(lx, 5.5, lz);
-      g.add(bulb);
-      addLampLight(THREE, scene, lx, lz, 5.2);
-      colliders.push({ x: lx, z: lz, r: 0.35 });
-    }
-  }
-  scene.add(g);
-  return g;
-}
-
-// Alun-Alun Arunika: plaza bundar + air mancur di tengah kota (0,0).
-// Air mancur digeser ke sudut barat-laut plaza (-12,-12) — BARA BERDIRI
-// DI TENGAH ZEBRA (0,0) saat shot foot, dan kamera shot foot di (0,2)
-// tidak boleh melayang tepat di atas baskom.
-function buildPlaza(THREE, scene, colliders) {
-  const g = new THREE.Group();
-  g.add(flat(THREE, 46, 46, PALETTE.plaza, 0, 0.05, 0));
-  const fx = -12;
-  const fz = -12;
-  const basin = new THREE.Mesh(
-    new THREE.CylinderGeometry(6, 6.6, 1.1, 24),
-    new THREE.MeshStandardMaterial({ color: 0x9a8d7c, roughness: 0.9 }),
-  );
-  basin.position.set(fx, 0.55, fz);
-  basin.castShadow = true;
-  g.add(basin);
-  const water = new THREE.Mesh(
-    new THREE.CylinderGeometry(5.4, 5.4, 0.3, 24),
-    new THREE.MeshStandardMaterial({
-      color: PALETTE.fountainWater, roughness: 0.15, metalness: 0.2,
-    }),
-  );
-  water.position.set(fx, 1.05, fz);
-  g.add(water);
-  const pillar = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.5, 0.8, 2.6, 10),
-    new THREE.MeshStandardMaterial({ color: 0xd8cdb8, roughness: 0.8 }),
-  );
-  pillar.position.set(fx, 1.8, fz);
-  pillar.castShadow = true;
-  g.add(pillar);
-  const jet = new THREE.Mesh(
-    new THREE.SphereGeometry(0.9, 10, 8),
-    new THREE.MeshStandardMaterial({
-      color: PALETTE.fountainWater, emissive: 0x5aa8c8, emissiveIntensity: 0.5,
-    }),
-  );
-  jet.position.set(fx, 3.4, fz);
-  g.add(jet);
-  colliders.push({ x: fx, z: fz, r: 6.8 });
-  scene.add(g);
-  return g;
-}
-
-// Kanal Pasar Terapung (z 56–76): air + perahu dagang + tenda pasar.
-function buildCanal(THREE, scene, rng, colliders) {
-  const g = new THREE.Group();
-  g.add(flat(THREE, 130, 18, PALETTE.canalWater, -20, 0.06, 66));
-  for (let i = 0; i < 5; i++) {
-    const bx = -62 + i * 22 + rng() * 6;
-    const bz = 62 + rng() * 8;
-    g.add(box(THREE, 7, 1.1, 2.6, PALETTE.boatHull, bx, 0.1, bz, (rng() - 0.5) * 0.3));
-    g.add(box(THREE, 4.5, 1.6, 2.0, PALETTE.marketAwning, bx, 1.0, bz, (rng() - 0.5) * 0.3));
-    colliders.push({ x: bx, z: bz, w: 7, d: 3 });
-  }
-  // Deret kios di tepi utara kanal — lewati koridor avenue x=0 supaya
-  // tidak menutup pandangan kamera kejar shot cover (kamera di (0,58)
-  // menghadap utara; atap kios di (-4,52) pernah menutup setengah frame).
-  for (let i = 0; i < 6; i++) {
-    const kx = -58 + i * 18;
-    if (Math.abs(kx) < 24) continue;
-    g.add(box(THREE, 6, 3.2, 5, 0xc8b088, kx, 0, 52));
-    g.add(box(THREE, 7, 0.5, 6, PALETTE.marketAwning, kx, 3.4, 52));
-    colliders.push({ x: kx, z: 52, w: 6, d: 5 });
-  }
-  scene.add(g);
-  return g;
-}
-
-// Gudang kontainer Dermaga (dekat -66, 102): aula + pintu hitam + kontainer.
-function buildWarehouse(THREE, scene, colliders) {
-  const g = new THREE.Group();
-  const w = LANDMARKS.warehouse;
-  g.add(box(THREE, 34, 12, 20, PALETTE.warehouse, w.x, 0, w.z));
-  g.add(box(THREE, 35, 1, 21, PALETTE.roof, w.x, 12, w.z));
-  // Pintu hitam besar menghadap utara (ke arah pemain heist di z=94).
-  const door = box(THREE, 10, 8, 0.8, PALETTE.warehouseDoor, w.x, 0, w.z - 10.2);
-  g.add(door);
-  // Kontainer ungu + hijau di kanan gudang, satu karat di kiri.
-  g.add(box(THREE, 12, 2.6, 2.6, PALETTE.containerPurple, w.x + 26, 0, w.z - 4));
-  g.add(box(THREE, 12, 2.6, 2.6, PALETTE.containerGreen, w.x + 26, 0, w.z + 4));
-  g.add(box(THREE, 12, 2.6, 2.6, PALETTE.containerGreen, w.x + 26, 2.6, w.z - 4));
-  g.add(box(THREE, 12, 2.6, 2.6, PALETTE.containerRust, w.x - 26, 0, w.z + 2));
-  colliders.push({ x: w.x, z: w.z, w: 34, d: 20 });
-  colliders.push({ x: w.x + 26, z: w.z - 4, w: 12, d: 2.6 });
-  colliders.push({ x: w.x + 26, z: w.z + 4, w: 12, d: 2.6 });
-  colliders.push({ x: w.x - 26, z: w.z + 2, w: 12, d: 2.6 });
-  scene.add(g);
-  return g;
-}
-
-// Alun-alun lentera Kampung Lentera (-52,-52): pelataran bundar + tiang
-// lentera menyala. Dipakai shot vista — Bara berdiri di ruang terbuka.
-function buildLanternPlaza(THREE, scene, colliders) {
-  const g = new THREE.Group();
-  const c = LANDMARKS.lanternVillage;
-  g.add(flat(THREE, 30, 30, PALETTE.plaza, c.x, 0.05, c.z));
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(9, 0.5, 8, 32),
-    new THREE.MeshStandardMaterial({ color: 0x8a7a5a, roughness: 0.9 }),
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.set(c.x, 0.15, c.z);
-  g.add(ring);
-  // Empat tiang lentera di sudut pelataran.
-  const glowMat = new THREE.MeshStandardMaterial({
-    color: 0xffb84d, emissive: 0xff9d2a, emissiveIntensity: 1.4,
-  });
-  for (const [ox, oz] of [[-8, -8], [8, -8], [-8, 8], [8, 8]]) {
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.14, 0.18, 4.4, 7),
-      new THREE.MeshStandardMaterial({ color: PALETTE.lampPole }),
-    );
-    pole.position.set(c.x + ox, 2.2, c.z + oz);
-    pole.castShadow = true;
-    g.add(pole);
-    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 8), glowMat);
-    lamp.position.set(c.x + ox, 4.6, c.z + oz);
-    g.add(lamp);
-    colliders.push({ x: c.x + ox, z: c.z + oz, r: 0.35 });
-  }
-  scene.add(g);
-  return g;
-}
-
-// Dermaga + laut teal di selatan (z > 112): papan kayu + air berkilau.
-function buildDockAndSea(THREE, scene, colliders) {
-  const g = new THREE.Group();
-  g.add(flat(THREE, 150, 14, PALETTE.sand, -20, 0.05, 108));
-  g.add(flat(THREE, 120, 8, PALETTE.dock, -30, 0.08, 112));
-  const sea = new THREE.Mesh(
-    new THREE.PlaneGeometry(560, 160),
-    new THREE.MeshStandardMaterial({ color: PALETTE.sea, roughness: 0.25, metalness: 0.35 }),
-  );
-  sea.rotation.x = -Math.PI / 2;
-  sea.position.set(0, -0.15, 196);
-  sea.receiveShadow = true;
-  g.add(sea);
-  // Tiang dermaga.
-  for (let i = 0; i < 8; i++) {
-    g.add(box(THREE, 0.8, 2.2, 0.8, PALETTE.dock, -84 + i * 16, -0.2, 116));
-  }
-  colliders.push({ x: -30, z: 112, w: 120, d: 8 });
-  scene.add(g);
-  return g;
-}
-
-// Perakit kota — dipanggil buildWorld. Kembalikan collider + landmark.
 export function buildCity(THREE, scene) {
-  const rng = mulberry32(7);
   const colliders = [];
-  buildGroundAndRoads(THREE, scene, colliders);
-  buildBuildings(THREE, scene, rng, colliders);
-  buildTreesAndLamps(THREE, scene, rng, colliders);
-  buildPlaza(THREE, scene, colliders);
-  buildLanternPlaza(THREE, scene, colliders);
-  buildCanal(THREE, scene, rng, colliders);
-  buildWarehouse(THREE, scene, colliders);
-  buildDockAndSea(THREE, scene, colliders);
+  const rand = mulberry32(CITY_SEED);
+  const group = new THREE.Group();
+  scene.add(group);
+
+  // Tanah dasar kota.
+  const ground = flat(THREE, 420, 420, PALETTE.ground, 0, 10, 0);
+  group.add(ground);
+
+  // Laut teal di dermaga selatan (z >= SEA_Z).
+  const sea = flat(THREE, 420, 200, PALETTE.sea, 0, SEA_Z + 100, 0.01);
+  group.add(sea);
+  const seaDeep = flat(THREE, 420, 60, PALETTE.seaDeep, 0, SEA_Z + 170, 0.015);
+  group.add(seaDeep);
+
+  // Dermaga kayu di tepi laut.
+  const dock = box(THREE, 120, 0.6, 12, 0x6a5138, DOCK.x, 0.3, DOCK.z);
+  group.add(dock);
+
+  // Jalan aspal + trotoar di kedua sisinya.
+  for (const z of ROAD_Z) {
+    group.add(flat(THREE, ROAD_EXTENT * 2, ROAD_WIDTH, PALETTE.road, 0, z, 0.03));
+    group.add(flat(THREE, ROAD_EXTENT * 2, 2.4, PALETTE.sidewalk, 0, z - ROAD_WIDTH / 2 - 1.2, 0.035));
+    group.add(flat(THREE, ROAD_EXTENT * 2, 2.4, PALETTE.sidewalk, 0, z + ROAD_WIDTH / 2 + 1.2, 0.035));
+    // Marka tengah putus-putus.
+    for (let x = -100; x <= 100; x += 8) {
+      group.add(flat(THREE, 3.2, 0.35, PALETTE.roadLine, x, z, 0.05));
+    }
+  }
+  for (const x of ROAD_X) {
+    group.add(flat(THREE, ROAD_WIDTH, ROAD_EXTENT * 2, PALETTE.road, x, 0, 0.03));
+    group.add(flat(THREE, 2.4, ROAD_EXTENT * 2, PALETTE.sidewalk, x - ROAD_WIDTH / 2 - 1.2, 0, 0.035));
+    group.add(flat(THREE, 2.4, ROAD_EXTENT * 2, PALETTE.sidewalk, x + ROAD_WIDTH / 2 + 1.2, 0, 0.035));
+    for (let z = -100; z <= 100; z += 8) {
+      group.add(flat(THREE, 0.35, 3.2, PALETTE.roadLine, x, z, 0.05));
+    }
+  }
+
+  // Zebra cross di persimpangan utama (0,0) — tempat shot jalan kaki.
+  for (let i = 0; i < ZEBRA.stripes; i++) {
+    const sx = -ZEBRA.width / 2 + (i + 0.5) * (ZEBRA.width / ZEBRA.stripes);
+    group.add(flat(THREE, 0.9, ROAD_WIDTH + 2, 0xf5f2e8, sx, ZEBRA.z, 0.06));
+  }
+
+  // Alun-alun: lingkaran paving di sekitar air mancur.
+  const plazaGeo = new THREE.CircleGeometry(16, 28);
+  const plazaMat = new THREE.MeshStandardMaterial({ color: PALETTE.plaza });
+  const plaza = new THREE.Mesh(plazaGeo, plazaMat);
+  plaza.rotation.x = -Math.PI / 2;
+  plaza.position.set(FOUNTAIN.x, 0.04, FOUNTAIN.z);
+  group.add(plaza);
+
+  // Air mancur: bak bundar + kolom tengah + cakram air biru.
+  const basinGeo = new THREE.CylinderGeometry(FOUNTAIN.radius, FOUNTAIN.radius + 0.6, 1.1, 24);
+  const basinMat = new THREE.MeshStandardMaterial({ color: 0x9a8a72 });
+  const basin = new THREE.Mesh(basinGeo, basinMat);
+  basin.position.set(FOUNTAIN.x, 0.55, FOUNTAIN.z);
+  group.add(basin);
+  const waterGeo = new THREE.CircleGeometry(FOUNTAIN.radius - 0.5, 24);
+  const waterMat = new THREE.MeshStandardMaterial({ color: 0x3fa8c8 });
+  const water = new THREE.Mesh(waterGeo, waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(FOUNTAIN.x, 1.05, FOUNTAIN.z);
+  group.add(water);
+  const colGeo = new THREE.CylinderGeometry(0.7, 0.9, 2.6, 12);
+  const col = new THREE.Mesh(colGeo, new THREE.MeshStandardMaterial({ color: 0x8a7a63 }));
+  col.position.set(FOUNTAIN.x, 1.8, FOUNTAIN.z);
+  group.add(col);
+  colliders.push({ x: FOUNTAIN.x, z: FOUNTAIN.z, r: FOUNTAIN.radius + 0.4 });
+
+  // Gedung di blok-blok antar jalan (lewati petak plaza + parkir barat).
+  const paletteCycle = [PALETTE.buildingA, PALETTE.buildingB, PALETTE.buildingC, PALETTE.buildingD];
+  const blockCenters = [];
+  for (const gx of [-90, -30, 30, 90]) {
+    for (const gz of [-90, -30, 30, 90]) {
+      blockCenters.push({ x: gx, z: gz });
+    }
+  }
+  let bi = 0;
+  for (const b of blockCenters) {
+    // Petak plaza (-30,-30) menampung alun-alun; petak (-90,30) parkir.
+    if (b.x === -30 && b.z === -30) continue;
+    if (b.x === -90 && b.z === 30) continue;
+    const n = 2 + Math.floor(rand() * 2); // 2-3 gedung per blok
+    for (let k = 0; k < n; k++) {
+      const w = 12 + rand() * 10;
+      const d = 12 + rand() * 10;
+      const h = BUILDING_HEIGHT_MIN + rand() * (BUILDING_HEIGHT_MAX - BUILDING_HEIGHT_MIN);
+      const ox = (rand() - 0.5) * 22;
+      const oz = (rand() - 0.5) * 22;
+      const bx = b.x + ox;
+      const bz = b.z + oz;
+      const color = paletteCycle[bi % paletteCycle.length];
+      bi++;
+      const tower = box(THREE, w, h, d, color, bx, h / 2, bz);
+      group.add(tower);
+      const roof = box(THREE, w + 0.6, 0.8, d + 0.6, PALETTE.roof, bx, h + 0.4, bz);
+      group.add(roof);
+      // Jendela menyala: strip tipis kuning di sisi menghadap jalan.
+      const win = box(THREE, w * 0.7, 0.5, 0.2, PALETTE.lampGlow, bx, h * 0.55, bz - d / 2 - 0.05);
+      group.add(win);
+      colliders.push({ x: bx, z: bz, w, d });
+    }
+  }
+
+  // Pohon di tepi trotoar avenida utama.
+  for (let x = -100; x <= 100; x += TREE_SPACING) {
+    for (const z of [-6.8, 6.8]) {
+      if (Math.abs(x) < 8) continue; // jangan tutupi zebra cross
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.22, 0.3, 2.4, 8),
+        new THREE.MeshStandardMaterial({ color: PALETTE.treeTrunk }),
+      );
+      trunk.position.set(x, 1.2, z);
+      group.add(trunk);
+      const crown = new THREE.Mesh(
+        new THREE.ConeGeometry(1.9, 4.2, 8),
+        new THREE.MeshStandardMaterial({ color: PALETTE.treeLeaf }),
+      );
+      crown.position.set(x, 4.4, z);
+      group.add(crown);
+    }
+  }
+
+  // Lampu jalan di kedua sisi avenida z=0 dan x=0.
+  for (let x = -99; x <= 99; x += LAMP_SPACING) {
+    group.add(makeStreetLamp(THREE, x, -6.4));
+    group.add(makeStreetLamp(THREE, x + 11, 6.4));
+  }
+  for (let z = -99; z <= 99; z += LAMP_SPACING) {
+    group.add(makeStreetLamp(THREE, -6.4, z));
+    group.add(makeStreetLamp(THREE, 6.4, z + 11));
+  }
+
+  // Gudang pelabuhan: kotak besar + pintu hitam menghadap utara (ke pemain).
+  const wh = WAREHOUSE;
+  const shed = box(THREE, wh.w, 9, wh.d, PALETTE.warehouse, wh.x, 4.5, wh.z);
+  group.add(shed);
+  const shedRoof = box(THREE, wh.w + 1, 0.7, wh.d + 1, PALETTE.roof, wh.x, 9.3, wh.z);
+  group.add(shedRoof);
+  const door = box(THREE, 6, 6.5, 0.4, PALETTE.doorBlack, wh.x, 3.25, wh.z - wh.d / 2 - 0.1);
+  group.add(door);
+  colliders.push({ x: wh.x, z: wh.z, w: wh.w, d: wh.d });
+
+  // Kontainer: ungu di barat gudang, hijau di timur — penanda shot heist.
+  const contPurple = box(THREE, 10, 3.2, 3.4, PALETTE.containerPurple, wh.x - 22, 1.6, wh.z - 2);
+  group.add(contPurple);
+  const contGreen = box(THREE, 10, 3.2, 3.4, PALETTE.containerGreen, wh.x + 22, 1.6, wh.z + 1);
+  group.add(contGreen);
+  const contStack = box(THREE, 8, 3.2, 3.4, PALETTE.containerGreen, wh.x - 22, 4.8, wh.z - 2);
+  group.add(contStack);
+  colliders.push({ x: wh.x - 22, z: wh.z - 2, w: 10, d: 3.4 });
+  colliders.push({ x: wh.x + 22, z: wh.z + 1, w: 10, d: 3.4 });
+
+  const roads = buildRoadGraph();
   return {
+    group,
     colliders,
-    landmarks: LANDMARKS,
-    plaza: LANDMARKS.plaza,
-    warehouse: LANDMARKS.warehouse,
-    dock: LANDMARKS.dock,
+    roads,
+    fountain: { x: FOUNTAIN.x, z: FOUNTAIN.z },
+    warehouse: { x: wh.x, z: wh.z },
+    zebra: { x: ZEBRA.x, z: ZEBRA.z },
+    dock: { x: DOCK.x, z: DOCK.z },
   };
 }

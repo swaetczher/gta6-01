@@ -1,156 +1,127 @@
-// world-adapter.js — Jembatan gameplay <-> dunia ARUNIKA BAY.
-//
-// Gameplay TIDAK BOLEH import modul `../world/` (kontrak) kecuali
-// `../world/config.js`. Modul ini menerima objek `world` yang sudah jadi
-// dari `buildWorld(THREE, scene)` lewat `ctx`, lalu mengekspos isinya dalam
-// bentuk yang nyaman dipakai gameplay: kendaraan, collider, titik spawn,
-// dan nama distrik dari koordinat.
-//
-// Semua akses dijaga: dunia yang kehilangan satu bidang (mis. di tes, saat
-// `world` hanya berisi sebagian) tetap menghasilkan adapter yang jalan
-// dengan nilai default kosong — bukan error.
+// world-adapter.js — Jembatan gameplay ke dunia.
+// Gameplay TIDAK mengimpor modul dunia: semua yang dibutuhkan datang
+// lewat satu objek `world` dari ctx. Adapter ini membungkus objek itu
+// dengan pertanyaan-pertanyaan yang dibutuhkan gameplay: distrik apa
+// di titik ini, di mana Kancil curian, mobil terkunci terdekat apa,
+// dan apakah titik ini menabrak gedung/pagar.
 
-/** Nama distrik kota (dipakai HUD + syarat misi). */
 export const DISTRICTS = {
-  PLAZA: 'Alun-Alun Arunika',
-  MARKET: 'Distrik Niaga',
-  DOCK: 'Dermaga Arunika',
-  VILLAGE: 'Kampung Lentera',
-  FLOATING: 'Pasar Terapung',
+  plaza: 'Alun-Alun Arunika',
+  niaga: 'Distrik Niaga',
+  dermaga: 'Dermaga Arunika',
+  lentera: 'Kampung Lentera',
+  terapung: 'Pasar Terapung',
 };
 
-/** Posisi Kancil M2 curian (dari kontrak staging). */
-export const KANCIL_SPOT = { x: -88, z: 44 };
-
-/** Posisi gudang kontainer Dermaga (staging heist). */
-export const WAREHOUSE_SPOT = { x: -66, z: 94 };
-
-/** Posisi markas Ombak Hitam (M5). */
-export const HIDEOUT_SPOT = { x: 70, z: -70 };
-
-/**
- * Nama distrik dari koordinat (x, z). Aturan kuadran kota:
- * tengah = Alun-Alun; barat daya + selatan = Dermaga; barat laut =
- * Kampung Lentera; timur jauh = Kampung Lentera; selatan jauh = Pasar
- * Terapung; sisanya = Distrik Niaga.
- */
+// Petakan koordinat ke nama distrik. Dermaga di ujung selatan (z besar),
+// Niaga di timur, Lentera di barat, Terapung di utara, plaza di tengah.
 export function districtAt(x, z) {
-  const px = Number(x) || 0;
-  const pz = Number(z) || 0;
-  if (Math.abs(px) <= 25 && Math.abs(pz) <= 25) return DISTRICTS.PLAZA;
-  if (px < -40 && pz > 40) return DISTRICTS.DOCK;
-  if (px < -40 && pz < -40) return DISTRICTS.VILLAGE;
-  if (px > 40 && pz > 40) return DISTRICTS.FLOATING;
-  if (px > 40) return DISTRICTS.VILLAGE;
-  if (pz > 60) return DISTRICTS.FLOATING;
-  return DISTRICTS.MARKET;
+  if (z >= 60) return DISTRICTS.dermaga;
+  if (x >= 40 && z >= -20) return DISTRICTS.niaga;
+  if (x <= -40) return DISTRICTS.lentera;
+  if (z <= -40) return DISTRICTS.terapung;
+  return DISTRICTS.plaza;
 }
 
-/** Jarak datar (XZ) antara dua titik. */
-function flatDistance(ax, az, bx, bz) {
-  const dx = ax - bx;
-  const dz = az - bz;
-  return Math.sqrt(dx * dx + dz * dz);
-}
-
-/**
- * Adaptasi objek dunia untuk gameplay.
- *
- * @param {object} world hasil `buildWorld(THREE, scene)` — boleh sebagian
- *   (bidang yang hilang diganti default kosong)
- */
-export function createWorldAdapter(world) {
+export function createAdapter(world) {
   const w = world || {};
   const vehicles = Array.isArray(w.vehicles) ? w.vehicles : [];
-  const pedestrians = Array.isArray(w.pedestrians) ? w.pedestrians : [];
-  const traffic = Array.isArray(w.traffic) ? w.traffic : [];
   const colliders = Array.isArray(w.colliders) ? w.colliders : [];
-  const spawnPoints = w.spawnPoints || {};
-  const config = w.config || {};
+
+  function dist(ax, az, bx, bz) {
+    return Math.hypot(ax - bx, az - bz);
+  }
 
   const api = {
-    /** Objek dunia mentah (untuk main.js bila perlu). */
     world: w,
-    /** Kendaraan parkir + lalu lintas: `{mesh, x, z, heading, speed, type, locked, label, driven}`. */
-    vehicles,
-    /** Pejalan kaki: `{mesh, x, z, heading, speed}`. */
-    pedestrians,
-    /** Mobil lalu lintas: `{mesh, x, z, heading, speed}`. */
-    traffic,
-    /** Collider: `{x, z, r}` atau `{x, z, w, d}`. */
-    colliders,
-    /** Titik spawn: `{player: {x, z, yaw}, kancil: {x, z}}`. */
-    spawnPoints,
-    /** Konstanta dunia (dari config.js, bila ada). */
-    config,
+    get vehicles() { return vehicles; },
+    get colliders() { return colliders; },
 
-    /** Titik spawn pemain (default 0,0 bila dunia tak menyediakannya). */
-    playerSpawn() {
-      const p = spawnPoints.player || {};
-      return { x: Number(p.x) || 0, z: Number(p.z) || 0, yaw: Number(p.yaw) || 0 };
-    },
+    districtAt,
 
-    /** Kancil M2 curian — dicari dari daftar kendaraan, jatuh ke KANCIL_SPOT. */
+    // Mobil Kancil curian M2 — target misi kedua.
     kancil() {
-      const found = vehicles.find((v) => v && v.type === 'kancil');
-      if (found) return found;
-      return { x: KANCIL_SPOT.x, z: KANCIL_SPOT.z, type: 'kancil', locked: true };
+      return vehicles.find((v) => v && v.type === 'kancil') || null;
     },
 
-    /** Kendaraan terdekat dari (x, z) dalam radius `range`. */
-    findVehicleNear(x, z, range) {
+    // Mobil terkunci terdekat dalam jangkauan (untuk mencuri).
+    nearestLockedVehicle(x, z, maxDist = 3.2) {
       let best = null;
-      let bestDist = Infinity;
-      for (const vehicle of vehicles) {
-        if (!vehicle) continue;
-        const d = flatDistance(x, z, vehicle.x || 0, vehicle.z || 0);
-        if (d < range && d < bestDist) {
+      let bestDist = maxDist;
+      for (const v of vehicles) {
+        if (!v || !v.locked || v.driven) continue;
+        const d = dist(x, z, v.x, v.z);
+        if (d < bestDist) {
           bestDist = d;
-          best = vehicle;
+          best = v;
         }
       }
-      return best ? { vehicle: best, distance: bestDist } : null;
+      return best;
     },
 
-    /** Mobil terkunci terdekat (target curian) dalam radius `range`. */
-    nearestLockedVehicle(x, z, range) {
+    // Kendaraan apa pun yang terdekat (untuk interaksi umum).
+    nearestVehicle(x, z, maxDist = 4) {
       let best = null;
-      let bestDist = Infinity;
-      for (const vehicle of vehicles) {
-        if (!vehicle || !vehicle.locked) continue;
-        const d = flatDistance(x, z, vehicle.x || 0, vehicle.z || 0);
-        if (d < range && d < bestDist) {
+      let bestDist = maxDist;
+      for (const v of vehicles) {
+        if (!v) continue;
+        const d = dist(x, z, v.x, v.z);
+        if (d < bestDist) {
           bestDist = d;
-          best = vehicle;
+          best = v;
         }
       }
-      return best ? { vehicle: best, distance: bestDist } : null;
+      return best;
     },
 
-    /** Jumlah mobil parkir yang terkunci. */
-    lockedCount() {
-      let n = 0;
-      for (const vehicle of vehicles) if (vehicle && vehicle.locked) n++;
-      return n;
-    },
-
-    /** Apakah titik (x, z) menabrak collider (dengan radius `r`). */
-    hitsCollider(x, z, r = 0) {
+    // Apakah titik (x, z) menabrak collider? Lingkaran {x,z,r} atau
+    // kotak {x,z,w,d} (w/d = lebar penuh, berpusat di x,z).
+    hitsCollider(x, z, radius = 0.6) {
       for (const c of colliders) {
         if (!c) continue;
         if (typeof c.r === 'number') {
-          if (flatDistance(x, z, c.x, c.z) < c.r + r) return true;
+          if (dist(x, z, c.x, c.z) < c.r + radius) return true;
         } else if (typeof c.w === 'number' && typeof c.d === 'number') {
-          if (Math.abs(x - c.x) < c.w / 2 + r && Math.abs(z - c.z) < c.d / 2 + r) {
-            return true;
-          }
+          const dx = Math.abs(x - c.x);
+          const dz = Math.abs(z - c.z);
+          if (dx < c.w / 2 + radius && dz < c.d / 2 + radius) return true;
         }
       }
       return false;
     },
 
-    /** Nama distrik di koordinat (x, z). */
-    districtAt,
+    // Titik spawn pemain dari dunia, atau tengah plaza bila tak ada.
+    spawnPlayer() {
+      const sp = w.spawnPoints && w.spawnPoints.player;
+      if (sp && typeof sp.x === 'number') {
+        return { x: sp.x, z: sp.z ?? 0, yaw: sp.yaw ?? 0 };
+      }
+      return { x: 0, z: 0, yaw: 0 };
+    },
+
+    // Titik spawn Kancil dari dunia, atau posisi mobilnya.
+    spawnKancil() {
+      const sp = w.spawnPoints && w.spawnPoints.kancil;
+      if (sp && typeof sp.x === 'number') return { x: sp.x, z: sp.z ?? 0 };
+      const k = api.kancil();
+      return k ? { x: k.x, z: k.z } : { x: -88, z: 44 };
+    },
+
+    // Daftar kendaraan parkir yang terkunci (target pencurian).
+    lockedVehicles() {
+      return vehicles.filter((v) => v && v.locked && !v.driven);
+    },
+
+    // Apakah ada kendaraan dalam radius kecil dari titik ini?
+    vehicleNear(x, z, radius = 2) {
+      return api.nearestVehicle(x, z, radius) !== null;
+    },
   };
+
   return api;
+}
+
+// Adapter sekali pakai untuk dunia kosong (tes atau menu awal).
+export function emptyAdapter() {
+  return createAdapter({ vehicles: [], colliders: [], spawnPoints: {} });
 }

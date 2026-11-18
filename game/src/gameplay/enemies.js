@@ -1,232 +1,184 @@
-// enemies.js — Preman "Ombak Hitam" dan Rangga Samudra.
-//
-// Musuh di ARUNIKA BAY adalah anak buah Rangga Samudra yang menjaga gudang
-// kontainer, markas, dan jalanan Dermaga. Ada dua jenis:
-//   grunt — preman biasa (nyawa 30), mengejar dan memukul dari dekat.
-//   boss  — Rangga Samudra sendiri (nyawa 150), lebih cepat dan lebih kuat.
-//
-// Musuh disimpan sebagai data (x, z, health, alive, state) + mesh THREE
-// sederhana (kotak merah gelap). Menembak diatur combat.js — di sini hanya
-// gerak, nyawa, dan hitungan yang masih hidup.
+// enemies.js — Preman "Ombak Hitam" dan bosnya, Rangga Samudra.
+// Preman menjaga satu titik (pos jaga). Bila Bara mendekat, mereka
+// mengejar dan memukul; bila Bara menjauh, mereka kembali ke posnya.
+// Bos Rangga lebih kuat, lebih cepat, dan tidak pernah kabur.
 
-export const ENEMY_KIND_GRUNT = 'grunt';
-export const ENEMY_KIND_BOSS = 'boss';
+export const ENEMY_KINDS = {
+  grunt: { hp: 30, speed: 3.1, damage: 8, range: 1.5, color: 0xb91c1c },
+  bruiser: { hp: 55, speed: 2.6, damage: 12, range: 1.6, color: 0x7c2d12 },
+  boss: { hp: 150, speed: 3.8, damage: 16, range: 1.8, color: 0x4c1d95 },
+};
+export const AGGRO_RANGE = 18;
+export const ENEMY_HIT_COOLDOWN = 1.6;
 
-// Nyawa awal per jenis.
-export const ENEMY_HEALTH_GRUNT = 30;
-export const ENEMY_HEALTH_BOSS = 150;
-
-// Kecepatan (meter/detik) dan jangkauan.
-export const ENEMY_SPEED_GRUNT = 3.2;
-export const ENEMY_SPEED_BOSS = 4.2;
-export const ENEMY_AGGRO_RANGE = 18;
-export const ENEMY_ATTACK_RANGE = 1.9;
-export const ENEMY_ATTACK_DAMAGE = 8;
-export const ENEMY_ATTACK_COOLDOWN = 1.2;
-
-// Jarak lepas: musuh berhenti mengejar dan kembali ke titik jaga.
-export const ENEMY_LEASH_RANGE = 34;
-
-/** Nyawa awal untuk jenis musuh tertentu. */
-export function healthForKind(kind) {
-  return kind === ENEMY_KIND_BOSS ? ENEMY_HEALTH_BOSS : ENEMY_HEALTH_GRUNT;
-}
-
-/** Kecepatan untuk jenis musuh tertentu. */
-export function speedForKind(kind) {
-  return kind === ENEMY_KIND_BOSS ? ENEMY_SPEED_BOSS : ENEMY_SPEED_GRUNT;
-}
-
-/** Jarak datar (XZ) antara dua titik. */
-function flatDistance(ax, az, bx, bz) {
-  const dx = ax - bx;
-  const dz = az - bz;
-  return Math.sqrt(dx * dx + dz * dz);
-}
-
-/**
- * Bangun mesh musuh: badan kotak merah gelap + kepala. Bos diberi badan
- * lebih besar dan warna lebih pekat supaya terbaca dari jauh.
- */
-export function buildEnemyMesh(THREE, kind) {
-  const group = new THREE.Group();
-  const isBoss = kind === ENEMY_KIND_BOSS;
-  const cloth = new THREE.MeshLambertMaterial({
-    color: isBoss ? 0x7f1d1d : 0x991b1b,
-  });
-  const skin = new THREE.MeshLambertMaterial({ color: 0xc98a5a });
-  const scale = isBoss ? 1.25 : 1;
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.66, 1.0, 0.38), cloth);
-  body.position.y = 0.98;
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.44, 0.44), skin);
-  head.position.y = 1.72;
-  const legs = new THREE.Mesh(
-    new THREE.BoxGeometry(0.52, 0.52, 0.34),
-    new THREE.MeshLambertMaterial({ color: 0x1f2937 }),
-  );
-  legs.position.y = 0.26;
-  group.add(body);
-  group.add(head);
-  group.add(legs);
-  group.scale.setScalar(scale);
-  return group;
-}
-
-/**
- * Manajer musuh. `THREE` dan `scene` boleh null di tes logika.
- *
- * @param {object} THREE pustaka three.js (atau stub di tes)
- * @param {object|null} scene scene three.js (atau null di tes)
- * @param {(event:object)=>void} [onEvent] dipanggil saat musuh tumbang / menyerang
- */
-export function createEnemies(THREE, scene, onEvent) {
+export function createEnemies(opts = {}) {
+  const THREE = opts.THREE || null;
+  const scene = opts.scene || null;
+  const getPlayer = typeof opts.getPlayer === 'function' ? opts.getPlayer : () => null;
+  const onHitPlayer = typeof opts.onHitPlayer === 'function' ? opts.onHitPlayer : null;
+  const onEnemyDown = typeof opts.onEnemyDown === 'function' ? opts.onEnemyDown : null;
   const list = [];
-  const emit = typeof onEvent === 'function' ? onEvent : null;
+  let nextId = 1;
 
-  function syncMesh(enemy) {
+  // Boneka preman: badan warna geng + kepala. Bos memakai warna ungu.
+  function buildMesh(kind) {
+    if (!THREE || !scene) return null;
+    const def = ENEMY_KINDS[kind] || ENEMY_KINDS.grunt;
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.66, 1.1, 0.38),
+      new THREE.MeshLambertMaterial({ color: def.color }),
+    );
+    body.position.y = 0.98;
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.27, 10, 8),
+      new THREE.MeshLambertMaterial({ color: 0xd9a066 }),
+    );
+    head.position.y = 1.76;
+    group.add(body);
+    group.add(head);
+    scene.add(group);
+    return group;
+  }
+
+  function placeMesh(enemy) {
     if (!enemy.mesh) return;
     enemy.mesh.position.set(enemy.x, 0, enemy.z);
     enemy.mesh.rotation.y = enemy.heading;
   }
 
+  function distanceToPlayer(enemy) {
+    const p = getPlayer();
+    if (!p) return Infinity;
+    const dx = p.x - enemy.x;
+    const dz = p.z - enemy.z;
+    return Math.hypot(dx, dz);
+  }
+
   const api = {
     list,
+    get aliveCount() { return list.filter((e) => e.hp > 0).length; },
 
-    /** Lahirkan satu musuh di (x, z). `opts.kind` = 'grunt' | 'boss'. */
-    spawn(x, z, opts = {}) {
-      const kind = opts.kind === ENEMY_KIND_BOSS ? ENEMY_KIND_BOSS : ENEMY_KIND_GRUNT;
+    // Lahirkan satu musuh di (x, z). opts: kind, hp, name, guardX/guardZ.
+    spawn(x, z, opts2 = {}) {
+      const kind = ENEMY_KINDS[opts2.kind] ? opts2.kind : 'grunt';
+      const def = ENEMY_KINDS[kind];
       const enemy = {
+        id: nextId++,
         kind,
+        name: opts2.name || (kind === 'boss' ? 'Rangga Samudra' : 'Preman Ombak Hitam'),
         x: Number(x) || 0,
         z: Number(z) || 0,
-        homeX: Number(x) || 0,
-        homeZ: Number(z) || 0,
+        guardX: opts2.guardX ?? (Number(x) || 0),
+        guardZ: opts2.guardZ ?? (Number(z) || 0),
         heading: Math.random() * Math.PI * 2,
-        health: opts.health || healthForKind(kind),
-        maxHealth: opts.health || healthForKind(kind),
-        alive: true,
+        hp: opts2.hp ?? def.hp,
+        maxHp: opts2.hp ?? def.hp,
+        speed: opts2.speed ?? def.speed,
+        damage: opts2.damage ?? def.damage,
+        range: opts2.range ?? def.range,
+        hitTimer: 0,
         state: 'guard',
-        attackTimer: 0,
-        shootTimer: 0,
         mesh: null,
       };
-      if (THREE && scene) {
-        enemy.mesh = buildEnemyMesh(THREE, kind);
-        scene.add(enemy.mesh);
-      }
-      syncMesh(enemy);
+      enemy.mesh = buildMesh(kind);
+      placeMesh(enemy);
       list.push(enemy);
       return enemy;
     },
 
-    /** Lahirkan Rangga Samudra (bos) di (x, z). */
-    spawnBoss(x, z) {
-      return this.spawn(x, z, { kind: ENEMY_KIND_BOSS });
-    },
-
-    /** Lahirkan `count` preman penjaga di sekitar (x, z). */
+    // Lahirkan n penjaga melingkar di sekitar (x, z) — dipakai staging heist.
     spawnGuards(x, z, count = 3) {
-      const guards = [];
-      for (let i = 0; i < count; i++) {
-        const angle = (i / Math.max(1, count)) * Math.PI * 2;
-        guards.push(
-          this.spawn(x + Math.cos(angle) * 4, z + Math.sin(angle) * 4, {
-            kind: ENEMY_KIND_GRUNT,
-          }),
-        );
+      const made = [];
+      const n = Math.max(1, Math.min(8, Math.round(count) || 3));
+      for (let i = 0; i < n; i++) {
+        const angle = (i / n) * Math.PI * 2;
+        const gx = x + Math.cos(angle) * 6;
+        const gz = z + Math.sin(angle) * 6;
+        made.push(api.spawn(gx, gz, { kind: 'grunt', guardX: gx, guardZ: gz }));
       }
-      return guards;
+      return made;
     },
 
-    /** Jumlah musuh yang masih hidup. */
-    aliveCount() {
-      let n = 0;
-      for (const enemy of list) if (enemy.alive) n++;
-      return n;
+    // Lahirkan bos Rangga Samudra di (x, z).
+    spawnBoss(x, z) {
+      return api.spawn(x, z, { kind: 'boss', name: 'Rangga Samudra' });
     },
 
-    /** Jumlah musuh yang sudah tumbang. */
-    defeatedCount() {
-      let n = 0;
-      for (const enemy of list) if (!enemy.alive) n++;
-      return n;
-    },
-
-    /** Beri damage ke satu musuh; kembalikan true bila musuh tumbang. */
+    // Lukai satu musuh. Kembalikan true bila musuh itu tumbang karenanya.
     damage(enemy, amount) {
-      if (!enemy || !enemy.alive) return false;
-      enemy.health -= Number(amount) || 0;
-      if (enemy.health <= 0) {
-        enemy.health = 0;
-        enemy.alive = false;
-        enemy.state = 'down';
-        if (enemy.mesh) enemy.mesh.visible = false;
-        if (emit) emit({ type: 'enemy-down', kind: enemy.kind, x: enemy.x, z: enemy.z });
-        return true;
+      if (!enemy || enemy.hp <= 0) return false;
+      enemy.hp = Math.max(0, enemy.hp - Math.max(0, Number(amount) || 0));
+      if (enemy.hp === 0) {
+        if (onEnemyDown) onEnemyDown(enemy);
+        if (enemy.mesh && scene) scene.remove(enemy.mesh);
+        enemy.mesh = null;
       }
-      return false;
+      return enemy.hp === 0;
     },
 
-    /** Hapus semua musuh (dan mesh-nya dari scene bila ada). */
-    clear() {
-      for (const enemy of list) {
-        if (enemy.mesh && scene && scene.remove) scene.remove(enemy.mesh);
+    // Musuh hidup terdekat dari satu titik (dipakai combat jarak dekat).
+    nearestAlive(x, z, maxDist = Infinity) {
+      let best = null;
+      let bestDist = maxDist;
+      for (const e of list) {
+        if (e.hp <= 0) continue;
+        const d = Math.hypot(e.x - x, e.z - z);
+        if (d < bestDist) {
+          bestDist = d;
+          best = e;
+        }
+      }
+      return best;
+    },
+
+    removeAll() {
+      for (const e of list) {
+        if (e.mesh && scene) scene.remove(e.mesh);
       }
       list.length = 0;
+      return 0;
     },
 
-    /**
-     * Majukan semua musuh satu frame: kejar Bara bila dekat, pukul bila
-     * sudah dalam jangkauan, kembali ke titik jaga bila Bara jauh.
-     * @param {number} dt detik sejak frame lalu
-     * @param {{x:number,z:number}} playerPos posisi Bara
-     * @param {(damage:number)=>void} [onPlayerHit] dipanggil saat Bara terpukul
-     */
-    update(dt, playerPos, onPlayerHit) {
-      const step = Math.max(0, dt || 0);
-      const px = playerPos ? playerPos.x || 0 : 0;
-      const pz = playerPos ? playerPos.z || 0 : 0;
-      for (const enemy of list) {
-        if (!enemy.alive) continue;
-        enemy.attackTimer = Math.max(0, enemy.attackTimer - step);
-        enemy.shootTimer = Math.max(0, enemy.shootTimer - step);
-        const distPlayer = flatDistance(enemy.x, enemy.z, px, pz);
-        const distHome = flatDistance(enemy.x, enemy.z, enemy.homeX, enemy.homeZ);
-
-        let targetX = enemy.homeX;
-        let targetZ = enemy.homeZ;
-        let speed = 0;
-        if (distPlayer < ENEMY_AGGRO_RANGE && distHome < ENEMY_LEASH_RANGE) {
-          enemy.state = 'chase';
-          targetX = px;
-          targetZ = pz;
-          speed = speedForKind(enemy.kind);
-          // Pukul Bara dari dekat (cooldown 1,2 dtk).
-          if (distPlayer < ENEMY_ATTACK_RANGE && enemy.attackTimer <= 0) {
-            enemy.attackTimer = ENEMY_ATTACK_COOLDOWN;
-            enemy.state = 'attack';
-            if (typeof onPlayerHit === 'function') {
-              onPlayerHit(ENEMY_ATTACK_DAMAGE);
-            }
-            if (emit) emit({ type: 'enemy-attack', kind: enemy.kind });
+    // Maju satu frame: kejar pemain bila dekat, pukul bila sampai,
+    // kembali ke pos jaga bila pemain menjauh.
+    update(dt) {
+      const step = Math.max(0, dt);
+      const p = getPlayer();
+      for (const e of list) {
+        if (e.hp <= 0) continue;
+        e.hitTimer = Math.max(0, e.hitTimer - step);
+        const dist = distanceToPlayer(e);
+        if (p && dist <= AGGRO_RANGE) {
+          e.state = 'chase';
+          const dx = p.x - e.x;
+          const dz = p.z - e.z;
+          const len = Math.hypot(dx, dz) || 1;
+          e.heading = Math.atan2(dx, dz);
+          if (dist > e.range) {
+            e.x += (dx / len) * e.speed * step;
+            e.z += (dz / len) * e.speed * step;
+          } else if (e.hitTimer <= 0) {
+            e.hitTimer = ENEMY_HIT_COOLDOWN;
+            if (onHitPlayer) onHitPlayer(e.damage, e);
           }
         } else {
-          enemy.state = 'guard';
-          if (distHome > 0.5) speed = speedForKind(enemy.kind) * 0.6;
+          // Kembali ke pos jaga, pelan-pelan.
+          e.state = 'guard';
+          const dx = e.guardX - e.x;
+          const dz = e.guardZ - e.z;
+          const len = Math.hypot(dx, dz);
+          if (len > 0.4) {
+            e.heading = Math.atan2(dx, dz);
+            e.x += (dx / len) * e.speed * 0.55 * step;
+            e.z += (dz / len) * e.speed * 0.55 * step;
+          }
         }
-
-        const dx = targetX - enemy.x;
-        const dz = targetZ - enemy.z;
-        const len = Math.sqrt(dx * dx + dz * dz);
-        if (speed > 0 && len > 0.001) {
-          enemy.heading = Math.atan2(dx, dz);
-          const move = Math.min(len, speed * step);
-          enemy.x += (dx / len) * move;
-          enemy.z += (dz / len) * move;
-        }
-        syncMesh(enemy);
+        placeMesh(e);
       }
+      return list.length;
     },
   };
+
   return api;
 }

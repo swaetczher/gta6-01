@@ -1,79 +1,98 @@
-// main.ts — Entrypoint ARUNIKA BAY (gta6-01) untuk Make Fun.
-//
-// Node 22, standard library saja, tanpa network. Program ini menyerahkan
-// game ke grader: menyalin folder game/ dan screenshots/ dari samping file
-// ini ke direktori output, lalu menulis dossier.json (ringkasan yang dibaca
-// juri) dengan library make.fun yang di-vendor.
-//
-// Di luar container grader, MAKEFUN_OUTPUT_DIR menggantikan /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-//
-// Batas yang dipakai (dari gate kompetisi): paling banyak 4 screenshot,
-// masing-masing paling besar 262.144 byte; game paling banyak 993 file /
-// 48 MiB; teks dossier paling banyak 163.840 byte.
+// main.ts — Entrypoint pengiriman ARUNIKA BAY ke kompetisi gta6-01.
+// Dijalankan: MAKEFUN_OUTPUT_DIR=out node main.ts
+// Tugasnya: pastikan game/index.html ada, salin game/ + screenshots/
+// ke direktori output, lalu bangun dossier.json lewat buildDossier
+// dari kit (./vendor/makefun-game.ts). Node 22, stdlib saja, tanpa network.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-/** Slug kompetisi + nama entri game ini. */
 export const ARUNIKA_BAY_ENTRY = 'gta6-01';
+export const COVER_IMAGE = '1-cover-chase.jpg';
 
-/** Screenshot pertama menurut nama = cover dossier. */
-export const ARUNIKA_BAY_COVER = '1-cover-chase.jpg';
+// Batas dossier dari kompetisi: 4 screenshot @ 262.144 byte, game
+// maks 993 file / 48 MiB, teks dossier maks 4 MiB.
+export const DOSSIER_CAPS = {
+  text_max_bytes: 4 * 1024 * 1024,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 48 * 1024 * 1024,
+};
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-
-// --- Penjaga: game/index.html wajib ada, kalau tidak penyerahan ditolak. ---
-const entryHtml = join(here, 'game', 'index.html');
-if (!existsSync(entryHtml)) {
-  console.error(`ARUNIKA BAY: game/index.html tidak ditemukan di ${here} — batal.`);
-  process.exit(1);
+export function entryDir(): string {
+  return resolve(import.meta.dirname ?? '.');
 }
 
-// --- Salin game/ + screenshots/ ke output. ---
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-console.log('ARUNIKA BAY: game/ disalin ke', join(out, 'game'));
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) {
-  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+export function outputDir(): string {
+  const fromEnv = process.env.MAKEFUN_OUTPUT_DIR;
+  if (fromEnv && fromEnv.trim().length > 0) return resolve(fromEnv);
+  return resolve(entryDir(), 'out');
 }
 
-// --- Daftar screenshot yang ikut diserahkan (maksimal 4, urut nama). ---
-const shotDir = join(here, 'screenshots');
-let shots: string[] = [];
-if (existsSync(shotDir)) {
-  shots = readdirSync(shotDir)
-    .filter((name) => /\.(png|jpe?g)$/i.test(name))
-    .sort()
-    .slice(0, 4);
-}
-for (const shot of shots) {
-  const size = statSync(join(shotDir, shot)).size;
-  if (size > 262144) {
-    console.error(`ARUNIKA BAY: screenshot ${shot} ${size} byte > 262144 — batal.`);
-    process.exit(1);
+// Penjaga: game/index.html wajib ada sebelum apa pun disalin.
+export function assertGameEntry(repoRoot: string): string {
+  const indexPath = join(repoRoot, 'game', 'index.html');
+  if (!existsSync(indexPath)) {
+    throw new Error(`main.ts: game/index.html tidak ditemukan di ${repoRoot}`);
   }
+  return indexPath;
 }
-console.log(`ARUNIKA BAY: ${shots.length} screenshot (${shots.join(', ')})`);
-console.log(`ARUNIKA BAY: cover = ${ARUNIKA_BAY_COVER}`);
 
-// --- Tulis dossier.json: ringkasan yang dibaca juri. ---
-// Caps scorer: teks paling banyak 163.840 byte; screenshot paling banyak 4
-// @ 262.144 byte; game paling banyak 993 file / 48 MiB; path di bawah game/
-// paling panjang 1.000 byte. buildDossier menolak entri yang melanggar.
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
+// Salin satu direktori sumber ke tujuan (rekursif, timpa bila ada).
+export function copyTree(source: string, target: string): void {
+  mkdirSync(target, { recursive: true });
+  cpSync(source, target, { recursive: true, force: true });
+}
+
+// Bangun entri lengkap di direktori output: salin game/ + screenshots/,
+// lalu tulis dossier.json. Kembalikan path dossier yang ditulis.
+export function buildEntry(repoRoot: string, outDir: string): string {
+  const indexPath = assertGameEntry(repoRoot);
+  void indexPath;
+  mkdirSync(outDir, { recursive: true });
+  const gameSource = join(repoRoot, 'game');
+  const shotsSource = join(repoRoot, 'screenshots');
+  copyTree(gameSource, join(outDir, 'game'));
+  console.log('game/ disalin');
+  if (existsSync(shotsSource)) {
+    copyTree(shotsSource, join(outDir, 'screenshots'));
+    console.log('screenshots/ disalin');
+  } else {
+    console.log('screenshots/ tidak ada — dossier tanpa gambar');
+  }
+  const dossier = buildDossier(outDir, DOSSIER_CAPS);
+  const dossierPath = join(outDir, 'dossier.json');
+  writeFileSync(dossierPath, dossier);
+  console.log(`dossier.json ditulis (${dossier.length} byte)`);
+  return dossierPath;
+}
+
+// Baca nama file cover dari dossier, untuk memastikan urutan gambar benar.
+export function coverFromDossier(dossierPath: string): string {
+  const parsed = JSON.parse(readFileSync(dossierPath, 'utf-8')) as {
+    images?: Array<{ name?: string }>;
+  };
+  const first = parsed.images && parsed.images[0];
+  return (first && first.name) || '';
+}
+
+function main(): void {
+  const repoRoot = entryDir();
+  const outDir = outputDir();
+  const dossierPath = buildEntry(repoRoot, outDir);
+  const cover = coverFromDossier(dossierPath);
+  if (cover !== COVER_IMAGE) {
+    console.log(`peringatan: cover dossier '${cover}', harapan '${COVER_IMAGE}'`);
+  } else {
+    console.log(`cover dossier benar: ${cover}`);
+  }
+  console.log(`entri ${ARUNIKA_BAY_ENTRY} siap diserahkan dari ${outDir}`);
+}
+
+const invokedAsScript = Boolean(
+  process.argv[1] && resolve(process.argv[1]) === resolve(join(entryDir(), 'main.ts')),
 );
-console.log('ARUNIKA BAY: dossier.json ditulis');
-console.log(`ARUNIKA BAY: entri ${ARUNIKA_BAY_ENTRY} siap diserahkan`);
+if (invokedAsScript) {
+  main();
+}

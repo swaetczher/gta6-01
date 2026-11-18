@@ -1,124 +1,121 @@
-// ARUNIKA BAY — graf jalan + lalu lintas 14 mobil (tulis ulang round 2).
-// Graf: simpul di tiap persimpangan avenue x street, sisi antar simpul
-// bertetangga. Mobil memilih sisi berikutnya di tiap simpul secara acak.
-import { AVENUES, STREETS, TRAFFIC_COUNT } from './config.js';
-import { makeCarMesh, spinWheels } from './vehicles.js';
+// traffic.js — Lalu lintas ARUNIKA BAY: 14 mobil warga yang berputar di
+// graf jalan kota. Arah gerak memakai rumus kontrak atan2(-dz, dx).
+// Tiap mobil menempuh satu ruas, lalu memilih ruas lanjutan yang tersambung
+// di ujungnya — jadi tidak pernah keluar jalan.
 
-export function buildRoadGraph() {
-  const nodes = [];
-  const index = new Map();
-  for (const x of AVENUES) {
-    for (const z of STREETS) {
-      index.set(`${x},${z}`, nodes.length);
-      nodes.push({ x, z });
-    }
+import { TRAFFIC_COUNT, TRAFFIC_SPEED_MIN, TRAFFIC_SPEED_MAX, CITY_SEED, mulberry32 } from './config.js';
+import { makeCarMesh, CAR_COLORS, spinWheels } from './vehicles.js';
+
+// Ujung ruas yang tersambung dengan titik (x, z): ruas lain yang punya
+// ujung di titik yang sama (persimpangan).
+function nextSegments(roads, segIndex, atEnd) {
+  const seg = roads.segments[segIndex];
+  const px = atEnd ? seg.bx : seg.ax;
+  const pz = atEnd ? seg.bz : seg.az;
+  const out = [];
+  for (let i = 0; i < roads.segments.length; i++) {
+    if (i === segIndex) continue;
+    const s = roads.segments[i];
+    if ((s.ax === px && s.az === pz) || (s.bx === px && s.bz === pz)) out.push(i);
   }
-  const edges = [];
-  const addEdge = (ax, az, bx, bz) => {
-    const a = index.get(`${ax},${az}`);
-    const b = index.get(`${bx},${bz}`);
-    if (a === undefined || b === undefined) return;
-    edges.push({ a, b });
-  };
-  for (let i = 0; i < AVENUES.length - 1; i++) {
-    for (const z of STREETS) addEdge(AVENUES[i], z, AVENUES[i + 1], z);
-  }
-  for (let i = 0; i < STREETS.length - 1; i++) {
-    for (const x of AVENUES) addEdge(x, STREETS[i], x, STREETS[i + 1]);
-  }
-  // Daftar sisi keluar per simpul (dua arah).
-  const adjacency = nodes.map(() => []);
-  for (let e = 0; e < edges.length; e++) {
-    adjacency[edges[e].a].push(e);
-    adjacency[edges[e].b].push(e);
-  }
-  return { nodes, edges, adjacency };
+  return out;
 }
 
-// Sisi tetangga acak dari sebuah simpul, jangan langsung putar balik.
-export function pickNextEdge(graph, nodeIdx, cameFromEdge) {
-  const options = graph.adjacency[nodeIdx].filter((e) => e !== cameFromEdge);
-  const pool = options.length > 0 ? options : graph.adjacency[nodeIdx];
-  if (pool.length === 0) return -1;
-  return pool[Math.floor(Math.random() * pool.length)];
-}
-
-const TRAFFIC_COLORS = [0xe8b820, 0xc23a2e, 0x2e6ac2, 0x3a8a4a, 0xd8d2c8, 0x8a8f96, 0x6a3a8a];
-const TRAFFIC_TYPES = ['sedan', 'sedan', 'sedan', 'taxi', 'truck', 'sedan', 'sedan'];
-
-// Lahirkan 14 mobil di sisi graf yang tersebar, kecepatan 6–11 m/dtk.
-export function spawnTraffic(THREE, scene, roads) {
-  const traffic = [];
+// Bangun armada traffic. Mengembalikan { list, update, freeze }.
+export function createTraffic(THREE, scene, roads) {
+  const rand = mulberry32(CITY_SEED + 77);
+  const list = [];
   for (let i = 0; i < TRAFFIC_COUNT; i++) {
-    const edgeIdx = (i * 3 + 1) % roads.edges.length;
-    const edge = roads.edges[edgeIdx];
-    const from = roads.nodes[edge.a];
-    const to = roads.nodes[edge.b];
-    const t = (i % 5) / 5;
-    const x = from.x + (to.x - from.x) * t;
-    const z = from.z + (to.z - from.z) * t;
-    const color = TRAFFIC_COLORS[i % TRAFFIC_COLORS.length];
-    const type = TRAFFIC_TYPES[i % TRAFFIC_TYPES.length];
-    const mesh = makeCarMesh(THREE, color, type);
-    mesh.position.set(x, 0, z);
-    scene.add(mesh);
-    traffic.push({
-      mesh,
-      x,
-      z,
+    const segIndex = i % roads.segments.length;
+    const seg = roads.segments[segIndex];
+    const forward = rand() > 0.5;
+    const color = CAR_COLORS[(i + 2) % CAR_COLORS.length];
+    const { group, wheels } = makeCarMesh(THREE, color, 'sedan');
+    scene.add(group);
+    const speed = TRAFFIC_SPEED_MIN + rand() * (TRAFFIC_SPEED_MAX - TRAFFIC_SPEED_MIN);
+    const car = {
+      mesh: group,
+      wheels,
+      segIndex,
+      forward,
+      t: rand(),
+      speed,
+      x: 0,
+      z: 0,
       heading: 0,
-      speed: 6 + (i % 6),
-      type,
+      type: 'traffic',
       locked: false,
-      label: type === 'taxi' ? 'Taksi' : 'Mobil lalu lintas',
+      label: `Lalu lintas ${i + 1}`,
       driven: false,
-      edge: edgeIdx,
-      from: edge.a,
-      to: edge.b,
-      progress: t,
-    });
+    };
+    placeOnSegment(car, roads);
+    list.push(car);
   }
-  // Heading awal dari arah sisi masing-masing.
-  for (const car of traffic) updateCarHeading(car, roads);
-  return traffic;
-}
 
-// Arah hadap dari arah gerak: heading = atan2(-dz, dx) (rumus kontrak).
-export function updateCarHeading(car, roads) {
-  const from = roads.nodes[car.from];
-  const to = roads.nodes[car.to];
-  const dx = to.x - from.x;
-  const dz = to.z - from.z;
-  car.heading = Math.atan2(-dz, dx);
-  car.mesh.rotation.y = car.heading - Math.PI / 2;
-}
-
-// Majukan semua mobil traffic sepanjang sisinya; di simpul pilih sisi baru.
-export function updateTraffic(traffic, roads, dt) {
-  for (const car of traffic) {
-    const from = roads.nodes[car.from];
-    const to = roads.nodes[car.to];
-    const len = Math.hypot(to.x - from.x, to.z - from.z) || 1;
-    car.progress += (car.speed * dt) / len;
-    if (car.progress >= 1) {
-      const arrived = car.to;
-      const next = pickNextEdge(roads, arrived, car.edge);
-      if (next < 0) {
-        car.progress = 0;
-        continue;
-      }
-      const e = roads.edges[next];
-      car.edge = next;
-      car.from = e.a === arrived ? e.a : e.b;
-      car.to = e.a === arrived ? e.b : e.a;
-      car.progress = 0;
-      updateCarHeading(car, roads);
-    }
-    const a = roads.nodes[car.from];
-    const b = roads.nodes[car.to];
-    car.x = a.x + (b.x - a.x) * car.progress;
-    car.z = a.z + (b.z - a.z) * car.progress;
+  function placeOnSegment(car, roadsRef) {
+    const seg = roadsRef.segments[car.segIndex];
+    const ax = car.forward ? seg.ax : seg.bx;
+    const az = car.forward ? seg.az : seg.bz;
+    const bx = car.forward ? seg.bx : seg.ax;
+    const bz = car.forward ? seg.bz : seg.az;
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len = Math.sqrt(dx * dx + dz * dz) || 1;
+    car.x = ax + dx * car.t;
+    car.z = az + dz * car.t;
+    // Rumus arah kontrak: heading dari arah gerak (dx, dz).
+    car.heading = Math.atan2(-dz, dx);
     car.mesh.position.set(car.x, 0, car.z);
-    spinWheels(car.mesh, car.speed * dt);
+    car.mesh.rotation.y = car.heading - Math.PI / 2;
+    car._segLen = len;
   }
+
+  function update(dt) {
+    for (const car of list) {
+      const seg = roads.segments[car.segIndex];
+      const len = car._segLen || 200;
+      car.t += (car.speed * dt) / len;
+      if (car.t >= 1) {
+        // Sampai ujung ruas: pilih ruas lanjutan di persimpangan.
+        const old = roads.segments[car.segIndex];
+        const px = car.forward ? old.bx : old.ax;
+        const pz = car.forward ? old.bz : old.az;
+        const candidates = nextSegments(roads, car.segIndex, car.forward);
+        if (candidates.length > 0) {
+          car.segIndex = candidates[Math.floor(rand() * candidates.length)];
+          const ns = roads.segments[car.segIndex];
+          // Masuk ruas baru dari ujung yang menempel di persimpangan:
+          // menempel di ax -> maju (forward), menempel di bx -> mundur.
+          car.forward = ns.ax === px && ns.az === pz;
+          car.t = 0;
+        } else {
+          car.forward = !car.forward;
+          car.t = 0;
+        }
+      }
+      placeOnSegment(car, roads);
+      spinWheels(car, dt);
+    }
+  }
+
+  return { list, update, placeOnSegment };
+}
+
+// ---- Tambahan: bekukan + cari mobil traffic (revisi ke-2) ----
+
+// Ambil mobil traffic ke-i (dipakai staging shot jalan kaki: mobil biru).
+export function trafficCarAt(traffic, i) {
+  return traffic.list[i % traffic.list.length];
+}
+
+// Pindahkan satu mobil traffic ke titik diam (untuk staging shot).
+// Mobil diparkir di luar ruas: t dibekukan dengan menaruhnya di ruas
+// pendek buatan — cara paling aman: set posisi manual + speed 0.
+export function parkTrafficCar(car, x, z, heading) {
+  car.speed = 0;
+  car.x = x;
+  car.z = z;
+  car.heading = heading;
+  car.mesh.position.set(x, 0, z);
+  car.mesh.rotation.y = heading - Math.PI / 2;
 }

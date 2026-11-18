@@ -1,269 +1,195 @@
-// hud.js — HUD + minimap ARUNIKA BAY.
-//
-// Menulis ke elemen DOM yang disediakan `game/index.html`:
-//   #hud-wanted    bintang buronan ("BERSIH" atau ★★★★☆)
-//   #hud-money     uang ("$50")
-//   #hud-health    nyawa ("❤ 100")
-//   #hud-weapon    senjata ("Tinju" / "Pistol Rakitan 12/48")
-//   #hud-objective objektif misi aktif
-//   #hud-dialog    baris dialog cerita
-//   #hud-district  nama distrik tempat Bara berada
-//   #hud-banner    spanduk besar (mis. "FAJAR TERBIT — ARUNIKA BAY")
-//   #hud-toast     pesan singkat (mis. "Semua misi selesai ...")
-//   #minimap       canvas 2D 190×190
-//
-// Semua akses DOM dijaga: elemen yang tidak ada dilewati diam-diam (bukan
-// error), supaya modul tetap jalan di tes Node tanpa `document`. Pemanggil
-// boleh menyuntik `doc` kustom — dipakai tes dengan document palsu.
+// hud.js — Lapisan info di layar: bintang buronan, uang, nyawa, senjata,
+// objektif misi, dialog, nama distrik, banner, toast, dan minimap.
+// Semua setter menyimpan nilai terakhir di memori dulu, lalu menulis ke
+// DOM bila elemennya ada. Elemen yang tidak ada dilewati diam-diam —
+// HUD tidak pernah melempar error karena satu id hilang.
 
-import { wantedLabel } from './wanted.js';
-
-/** Ukuran minimap (px) — sesuai kontrak. */
 export const MINIMAP_SIZE = 190;
+export const MINIMAP_RANGE = 120;
 
-// Jangkauan dunia yang dipetakan minimap (meter, dari pusat kota).
-export const MINIMAP_WORLD_RADIUS = 130;
-
-// Warna titik di minimap.
-export const MINIMAP_COLORS = {
-  background: '#0f172a',
-  road: '#334155',
-  player: '#f97316',
-  police: '#3b82f6',
-  enemy: '#ef4444',
-  vehicle: '#94a3b8',
-  kancil: '#eab308',
-};
-
-/** Ambil elemen berdasarkan id, atau null bila tidak ada / tidak ada doc. */
-function el(doc, id) {
-  try {
-    if (!doc || typeof doc.getElementById !== 'function') return null;
-    return doc.getElementById(id);
-  } catch (_err) {
-    return null;
-  }
-}
-
-/** Tulis teks ke elemen bila ada. */
-function setText(node, text) {
-  if (!node) return;
-  try {
-    node.textContent = String(text);
-  } catch (_err) {
-    // Elemen read-only di tes — abaikan.
-  }
-}
-
-/** Format uang: 50 -> "$50". */
 export function formatMoney(amount) {
-  const n = Math.max(0, Math.floor(Number(amount) || 0));
-  return `$${n}`;
+  return `$${Math.round(Number(amount) || 0)}`;
 }
 
-/** Format nyawa: 100 -> "❤ 100". */
 export function formatHealth(health) {
-  const n = Math.max(0, Math.min(100, Math.floor(Number(health) || 0)));
-  return `❤ ${n}`;
+  return `❤${Math.max(0, Math.round(Number(health) || 0))}`;
 }
 
-/**
- * Manajer HUD.
- *
- * @param {object} [doc] dokumen DOM (default: `document` global bila ada;
- *   boleh null di tes logika)
- */
-export function createHud(doc) {
-  const documentRef =
-    doc || (typeof document !== 'undefined' ? document : null);
-  const nodes = {
-    wanted: el(documentRef, 'hud-wanted'),
-    money: el(documentRef, 'hud-money'),
-    health: el(documentRef, 'hud-health'),
-    weapon: el(documentRef, 'hud-weapon'),
-    objective: el(documentRef, 'hud-objective'),
-    dialog: el(documentRef, 'hud-dialog'),
-    district: el(documentRef, 'hud-district'),
-    banner: el(documentRef, 'hud-banner'),
-    toast: el(documentRef, 'hud-toast'),
-    minimap: el(documentRef, 'minimap'),
+export function formatStars(stars) {
+  const full = Math.max(0, Math.min(5, Math.round(Number(stars) || 0)));
+  return '★'.repeat(full) + '☆'.repeat(5 - full);
+}
+
+function el(id) {
+  if (typeof document === 'undefined') return null;
+  return document.getElementById(id);
+}
+
+export function createHud() {
+  const cache = {};
+  const last = {
+    wanted: 0,
+    money: 50,
+    health: 100,
+    weapon: 'Tinju',
+    ammo: null,
+    reserve: null,
+    objective: '',
+    dialog: '',
+    district: '',
+    banner: '',
+    toast: '',
   };
 
-  function show(node) {
-    if (!node || !node.style) return;
-    node.style.display = '';
+  function get(id) {
+    if (!(id in cache)) cache[id] = el(id);
+    return cache[id];
   }
 
-  function hide(node) {
-    if (!node || !node.style) return;
-    node.style.display = 'none';
+  function setText(id, text) {
+    const node = get(id);
+    if (node) node.textContent = text;
   }
+
+  function show(id, visible) {
+    const node = get(id);
+    if (node && node.style) node.style.display = visible ? '' : 'none';
+  }
+
+  let bannerTimer = null;
+  let toastTimer = null;
 
   const api = {
-    /** Elemen-elemen HUD yang ditemukan (untuk diagnosis). */
-    nodes,
+    get last() { return { ...last }; },
+    get money() { return last.money; },
+    get health() { return last.health; },
+    get wanted() { return last.wanted; },
+    get objective() { return last.objective; },
+    get district() { return last.district; },
 
-    /** Bintang buronan: tulis "BERSIH" atau ★★★★☆. */
     setWanted(stars) {
-      setText(nodes.wanted, wantedLabel(stars));
-      return nodes.wanted ? nodes.wanted.textContent : wantedLabel(stars);
+      last.wanted = Math.max(0, Math.min(5, Math.round(Number(stars) || 0)));
+      setText('hud-wanted', last.wanted === 0 ? 'BERSIH' : formatStars(last.wanted));
+      return last.wanted;
     },
 
-    /** Uang: tulis "$50". */
     setMoney(amount) {
-      setText(nodes.money, formatMoney(amount));
-      return formatMoney(amount);
+      last.money = Math.round(Number(amount) || 0);
+      setText('hud-money', formatMoney(last.money));
+      return last.money;
     },
 
-    /** Nyawa: tulis "❤ 100". */
     setHealth(health) {
-      setText(nodes.health, formatHealth(health));
-      return formatHealth(health);
+      last.health = Math.max(0, Math.round(Number(health) || 0));
+      setText('hud-health', formatHealth(last.health));
+      return last.health;
     },
 
-    /** Senjata: "Tinju" atau "Pistol Rakitan 12/48". */
-    setWeapon(name, ammo, reserveAmmo) {
-      let text = name || 'Tinju';
-      // Amunisi hanya ditampilkan bila ada peluru (pistol); tinju polos.
-      if (
-        typeof ammo === 'number' &&
-        typeof reserveAmmo === 'number' &&
-        (ammo > 0 || reserveAmmo > 0)
-      ) {
-        text = `${name} ${ammo}/${reserveAmmo}`;
+    setWeapon(name, ammo, reserve) {
+      last.weapon = String(name || 'Tinju');
+      last.ammo = typeof ammo === 'number' ? ammo : null;
+      last.reserve = typeof reserve === 'number' ? reserve : null;
+      let text = last.weapon;
+      if (last.ammo !== null && Number.isFinite(last.ammo)) {
+        text += ` ${last.ammo}/${last.reserve ?? '—'}`;
       }
-      setText(nodes.weapon, text);
+      setText('hud-weapon', text);
       return text;
     },
 
-    /** Objektif misi aktif. */
     setObjective(text) {
-      setText(nodes.objective, text || '');
-      return text || '';
+      last.objective = String(text || '');
+      setText('hud-objective', last.objective);
+      return last.objective;
     },
 
-    /** Baris dialog cerita. */
     setDialog(text) {
-      setText(nodes.dialog, text || '');
-      if (text) show(nodes.dialog);
-      else hide(nodes.dialog);
-      return text || '';
+      last.dialog = String(text || '');
+      setText('hud-dialog', last.dialog);
+      return last.dialog;
     },
 
-    /** Nama distrik tempat Bara berada. */
     setDistrict(name) {
-      setText(nodes.district, name || '');
-      return name || '';
+      last.district = String(name || '');
+      setText('hud-district', last.district);
+      return last.district;
     },
 
-    /** Spanduk besar tengah layar (layar akhir / vista). */
-    showBanner(text) {
-      setText(nodes.banner, text || '');
-      if (text) show(nodes.banner);
-      else hide(nodes.banner);
-      return text || '';
+    // Banner kuning besar di tengah layar (misalnya "FAJAR TERBIT").
+    showBanner(text, ms = 3500) {
+      last.banner = String(text || '');
+      setText('hud-banner', last.banner);
+      show('hud-banner', last.banner.length > 0);
+      if (bannerTimer) clearTimeout(bannerTimer);
+      if (last.banner.length > 0 && typeof setTimeout === 'function') {
+        bannerTimer = setTimeout(() => {
+          last.banner = '';
+          show('hud-banner', false);
+        }, ms);
+      }
+      return last.banner;
     },
 
-    /** Pesan singkat (toast) di bawah spanduk. */
-    showToast(text) {
-      setText(nodes.toast, text || '');
-      if (text) show(nodes.toast);
-      else hide(nodes.toast);
-      return text || '';
+    // Toast kecil bawah layar (misalnya "Semua misi selesai ...").
+    showToast(text, ms = 4000) {
+      last.toast = String(text || '');
+      setText('hud-toast', last.toast);
+      show('hud-toast', last.toast.length > 0);
+      if (toastTimer) clearTimeout(toastTimer);
+      if (last.toast.length > 0 && typeof setTimeout === 'function') {
+        toastTimer = setTimeout(() => {
+          last.toast = '';
+          show('hud-toast', false);
+        }, ms);
+      }
+      return last.toast;
     },
 
-    /** Sembunyikan spanduk + toast. */
-    hideBanner() {
-      this.showBanner('');
-      this.showToast('');
-    },
-
-    /**
-     * Gambar minimap 190×190: titik Bara (oranye), polisi (biru), preman
-     * (merah), mobil (abu-abu), Kancil M2 (kuning). Dunia dipetakan dari
-     * pusat kota dengan radius MINIMAP_WORLD_RADIUS.
-     */
-    drawMinimap(adapter, player, police, enemies) {
-      const canvas = nodes.minimap;
+    // Minimap 190x190: titik pemain di tengah, polisi biru, musuh merah,
+    // kendaraan abu-abu. Tanpa canvas di DOM, tidak melakukan apa-apa.
+    drawMinimap(view = {}) {
+      const canvas = get('minimap');
       if (!canvas || typeof canvas.getContext !== 'function') return false;
-      let ctx = null;
-      try {
-        ctx = canvas.getContext('2d');
-      } catch (_err) {
-        return false;
-      }
-      if (!ctx) return false;
+      const ctx2d = canvas.getContext('2d');
+      if (!ctx2d) return false;
       const size = MINIMAP_SIZE;
-      const scale = size / (MINIMAP_WORLD_RADIUS * 2);
-      const toMap = (wx, wz) => ({
-        x: size / 2 + wx * scale,
-        y: size / 2 + wz * scale,
-      });
-      const dot = (wx, wz, radius, color) => {
-        const p = toMap(wx, wz);
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-        ctx.fill();
+      const range = view.range || MINIMAP_RANGE;
+      const px = view.playerX ?? 0;
+      const pz = view.playerZ ?? 0;
+      const scale = size / 2 / range;
+      const toMap = (x, z) => [size / 2 + (x - px) * scale, size / 2 + (z - pz) * scale];
+      ctx2d.clearRect(0, 0, size, size);
+      ctx2d.fillStyle = '#0f2a1e';
+      ctx2d.fillRect(0, 0, size, size);
+      ctx2d.strokeStyle = '#2d6a4f';
+      ctx2d.strokeRect(1, 1, size - 2, size - 2);
+      const dot = (x, z, color, r) => {
+        const [mx, mz] = toMap(x, z);
+        ctx2d.fillStyle = color;
+        ctx2d.beginPath();
+        ctx2d.arc(mx, mz, r, 0, Math.PI * 2);
+        ctx2d.fill();
       };
-
-      ctx.fillStyle = MINIMAP_COLORS.background;
-      ctx.fillRect(0, 0, size, size);
-      // Jalan utama: salib di tengah kota.
-      ctx.fillStyle = MINIMAP_COLORS.road;
-      ctx.fillRect(0, size / 2 - 3, size, 6);
-      ctx.fillRect(size / 2 - 3, 0, 6, size);
-
-      const vehicles = (adapter && adapter.vehicles) || [];
-      for (const vehicle of vehicles) {
-        if (!vehicle) continue;
-        const isKancil = vehicle.type === 'kancil';
-        dot(
-          vehicle.x || 0,
-          vehicle.z || 0,
-          isKancil ? 3.5 : 2.5,
-          isKancil ? MINIMAP_COLORS.kancil : MINIMAP_COLORS.vehicle,
-        );
-      }
-      const foes = (enemies && enemies.list) || [];
-      for (const enemy of foes) {
-        if (enemy && enemy.alive) dot(enemy.x || 0, enemy.z || 0, 3, MINIMAP_COLORS.enemy);
-      }
-      const officers = (police && police.officers) || [];
-      for (const officer of officers) {
-        dot(officer.x || 0, officer.z || 0, 3, MINIMAP_COLORS.police);
-      }
-      if (player) {
-        dot(player.x || 0, player.z || 0, 4, MINIMAP_COLORS.player);
-        // Arah hadap Bara: garis pendek dari titik pemain.
-        const p = toMap(player.x || 0, player.z || 0);
-        const yaw = player.yaw || 0;
-        ctx.strokeStyle = MINIMAP_COLORS.player;
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p.x + Math.sin(yaw) * 9, p.y + Math.cos(yaw) * 9);
-        ctx.stroke();
-      }
+      for (const v of view.vehicles || []) dot(v.x, v.z, '#9ca3af', 2.5);
+      for (const e of view.enemies || []) dot(e.x, e.z, '#ef4444', 3);
+      for (const o of view.police || []) dot(o.x, o.z, '#3b82f6', 3);
+      dot(px, pz, '#f97316', 4);
       return true;
     },
 
-    /**
-     * Segarkan semua bidang HUD dari satu objek state game.
-     * @param {object} state `{money, health, weapon, ammo, reserveAmmo,
-     *   wantedStars, objective, dialog, district}`
-     */
-    update(state) {
-      if (!state) return;
-      if (typeof state.wantedStars === 'number') this.setWanted(state.wantedStars);
-      if (typeof state.money === 'number') this.setMoney(state.money);
-      if (typeof state.health === 'number') this.setHealth(state.health);
-      if (typeof state.weapon === 'string') {
-        this.setWeapon(state.weapon, state.ammo, state.reserveAmmo);
-      }
-      if (typeof state.objective === 'string') this.setObjective(state.objective);
-      if (typeof state.dialog === 'string') this.setDialog(state.dialog);
-      if (typeof state.district === 'string') this.setDistrict(state.district);
+    // Tampilkan menu (judul + pesan opsional) di #menu-screen.
+    showMenu(title, message) {
+      if (title) setText('menu-title', title);
+      if (typeof message === 'string') setText('menu-message', message);
+      show('menu-screen', true);
+      return true;
+    },
+
+    hideMenu() {
+      show('menu-screen', false);
+      return true;
     },
   };
+
   return api;
 }

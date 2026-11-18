@@ -1,98 +1,87 @@
-// ARUNIKA BAY — perakit dunia: buildWorld(THREE, scene) (tulis ulang round 2).
-// Kontrak (CONTRACT.md): kembalikan { scene, config, colliders, roads,
-// vehicles, pedestrians, traffic, spawnPoints, update(dt, input) }.
-// Loop sinkron mesh mobil driven HANYA ada di update() sini, satu tempat.
-import { CONFIG, SPAWN } from './config.js';
+// world/index.js — Perakit dunia ARUNIKA BAY.
+// buildWorld(THREE, scene) mengembalikan objek dunia sesuai kontrak:
+// scene, config, colliders, roads, vehicles, pedestrians, traffic,
+// spawnPoints, update(dt, input). Loop sinkron mesh mobil yang dikemudikan
+// WAJIB di sini, satu tempat — bukan tersebar di modul lain.
+
+import * as config from './config.js';
+import { buildLighting } from './lighting.js';
 import { buildCity } from './city.js';
-import { buildLighting, updateLighting } from './lighting.js';
-import { buildRoadGraph, spawnTraffic, updateTraffic } from './traffic.js';
-import { spawnPedestrians, updatePedestrians } from './pedestrians.js';
-import { buildParkedVehicles, spinWheels } from './vehicles.js';
-import { makeCollision } from './collision.js';
-import { renderMinimap } from './minimap.js';
+import { buildVehicles } from './vehicles.js';
+import { createTraffic } from './traffic.js';
+import { buildPedestrians } from './pedestrians.js';
+import { createCollision } from './collision.js';
 
 export function buildWorld(THREE, scene) {
-  const city = buildCity(THREE, scene);
   const lighting = buildLighting(THREE, scene);
-  const roads = buildRoadGraph();
-  const vehicles = buildParkedVehicles(THREE, scene);
-  const traffic = spawnTraffic(THREE, scene, roads);
-  const pedestrians = spawnPedestrians(THREE, scene);
-  const collision = makeCollision(city.colliders);
-  const colliders = city.colliders;
+  const city = buildCity(THREE, scene);
+  const vehicles = buildVehicles(THREE, scene);
+  const traffic = createTraffic(THREE, scene, city.roads);
+  const pedestrians = buildPedestrians(THREE, scene);
+  const collision = createCollision(city.colliders);
 
-  const world = {
-    scene,
-    config: CONFIG,
-    colliders,
-    collision,
-    roads,
-    vehicles,
-    pedestrians,
-    traffic,
-    landmarks: city.landmarks,
-    lighting,
-    spawnPoints: {
-      player: { ...SPAWN.player },
-      kancil: { ...SPAWN.kancil },
-    },
-    elapsed: 0,
-    // Majukan traffic, pejalan kaki, sinkron mesh mobil driven, minimap.
-    update(dt, input) {
-      const step = Math.min(dt, 0.05);
-      world.elapsed += step;
-      updateTraffic(traffic, roads, step);
-      updatePedestrians(pedestrians, step, world.elapsed);
-      updateLighting(lighting, step, world.elapsed);
-      // Sinkron mesh mobil driven — SATU-SATUNYA tempat sinkron ini.
-      for (const car of vehicles) {
-        if (!car.driven) continue;
-        car.mesh.position.set(car.x, 0, car.z);
-        car.mesh.rotation.y = car.heading - Math.PI / 2;
-        spinWheels(car.mesh, (car.speed || 0) * step);
+  let frozen = false;
+
+  // Majukan dunia satu langkah. Saat frozen (staging shot), lalu lintas
+  // dan pejalan kaki diam — tapi sinkron mesh mobil yang dikemudikan
+  // tetap jalan supaya Kancil mengikuti data gameplay.
+  function update(dt, input) {
+    void input;
+    if (!frozen) {
+      traffic.update(dt);
+      pedestrians.update(dt);
+    }
+    // SATU-SATUNYA tempat sinkron mesh mobil driven (kontrak).
+    for (const v of vehicles) {
+      if (!v.driven) continue;
+      v.mesh.position.set(v.x, 0, v.z);
+      v.mesh.rotation.y = v.heading - Math.PI / 2;
+      if (v.wheels && v.speed) {
+        const angle = (v.speed * dt) / 0.36;
+        for (const w of v.wheels) w.rotation.z -= angle;
       }
-      // Minimap 2D bila canvas #minimap ada di halaman.
-      if (typeof document !== 'undefined') {
-        const canvas = document.getElementById('minimap');
-        if (canvas) {
-          const focus = (input && input.minimapFocus) || null;
-          renderMinimap(canvas, world, focus);
-        }
-      }
-    },
-  };
-  return world;
-}
-
-// Utilitas dunia untuk gameplay (lewat objek world, tanpa import silang):
-// - worldPosOf(vehicle): posisi mesh saat ini
-// - nearestVehicle(world, x, z, maxDist): mobil parkir terdekat
-// - districtAtPoint(world, x, z): nama distrik dari config
-export function worldPosOf(vehicle) {
-  if (!vehicle) return null;
-  if (vehicle.mesh && vehicle.mesh.position) {
-    return { x: vehicle.mesh.position.x, z: vehicle.mesh.position.z };
-  }
-  return { x: vehicle.x || 0, z: vehicle.z || 0 };
-}
-
-export function nearestVehicle(world, x, z, maxDist = 4) {
-  let best = null;
-  let bestD = maxDist;
-  for (const v of world.vehicles || []) {
-    const d = Math.hypot(v.x - x, v.z - z);
-    if (d < bestD) {
-      bestD = d;
-      best = v;
     }
   }
-  return best;
+
+  function setFrozen(value) {
+    frozen = !!value;
+  }
+
+  function isFrozen() {
+    return frozen;
+  }
+
+  return {
+    scene,
+    config,
+    lighting,
+    city,
+    colliders: city.colliders,
+    collision,
+    roads: city.roads,
+    vehicles,
+    pedestrians: pedestrians.list,
+    pedestriansApi: pedestrians,
+    traffic: traffic.list,
+    trafficApi: traffic,
+    spawnPoints: {
+      player: { x: config.SPAWN_POINTS.player.x, z: config.SPAWN_POINTS.player.z, yaw: config.SPAWN_POINTS.player.yaw },
+      kancil: { x: config.SPAWN_POINTS.kancil.x, z: config.SPAWN_POINTS.kancil.z },
+    },
+    update,
+    setFrozen,
+    isFrozen,
+  };
 }
 
-export function districtAtPoint(world, x, z) {
-  const districts = (world.config && world.config.DISTRICTS) || [];
-  for (const d of districts) {
-    if (x >= d.x0 && x <= d.x1 && z >= d.z0 && z <= d.z1) return d.name;
-  }
-  return 'Arunika Bay';
-}
+// ---- Tambahan: utilitas dunia untuk gameplay + tes (revisi ke-2) ----
+
+// Ekspor ulang nama-nama penting supaya modul lain cukup import dari sini.
+export { config };
+export { buildLighting, SUN_RADIUS, SUN_POSITION } from './lighting.js';
+export { buildCity, buildRoadGraph } from './city.js';
+export { buildVehicles, findKancil } from './vehicles.js';
+export { createTraffic } from './traffic.js';
+export { buildPedestrians } from './pedestrians.js';
+export { createCollision, hitsAny, dist2D } from './collision.js';
+export { districtAt } from './config.js';

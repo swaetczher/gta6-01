@@ -4,5 +4,5 @@ node_modules/
 gta6-01-kit/
 *.tar.gz
 *.bin
-# out/ = hasil main.ts lokal (dossier + salinan game), bukan bagian submit.
-# gta6-01-kit/ + *.tar.gz/*.bin = kit kompetisi + arsip unduhan, jangan ikut commit.
+# Revisi r3: abaikan juga arsip tarball dan biner mentah hasil build lokal.
+# Revisi r3: folder kit gta6-01-kit/ tetap diabaikan karena isinya salinan starter kompetisi.

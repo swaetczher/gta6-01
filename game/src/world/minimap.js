@@ -1,99 +1,120 @@
-// ARUNIKA BAY — minimap 2D top-down 190x190 (tulis ulang round 2).
-// Digambar tiap frame oleh world.update ke canvas #minimap bila ada:
-// jalan abu-abu, blok bangunan, laut teal, pemain panah oranye, mobil,
-// pejalan kaki, dan penanda misi kuning.
-import { AVENUES, STREETS, WORLD } from './config.js';
+// minimap.js — Minimap 2D ARUNIKA BAY di atas canvas 190x190.
+// Menggambar jalan, laut, plaza, pemain (oranye), polisi (biru),
+// preman (merah), dan Kancil (oranye muda). Murni Canvas 2D —
+// tanpa THREE, bisa dites di Node dengan canvas palsu.
 
-const MAP_SIZE = 190;
+import { MINIMAP_COLORS, WORLD_BOUNDS, ROAD_Z, ROAD_X, SEA_Z, FOUNTAIN } from './config.js';
 
-// Proyeksi koordinat dunia (-130..130) ke piksel canvas (0..190).
-export function worldToMap(x, z) {
-  const s = MAP_SIZE / (WORLD.half * 2);
-  return { x: (x + WORLD.half) * s, y: (z + WORLD.half) * s };
+export const MINIMAP_SIZE = 190;
+
+// Petakan koordinat dunia -> piksel minimap.
+export function worldToMap(x, z, size = MINIMAP_SIZE) {
+  const spanX = WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX;
+  const spanZ = WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ;
+  return {
+    x: ((x - WORLD_BOUNDS.minX) / spanX) * size,
+    y: ((z - WORLD_BOUNDS.minZ) / spanZ) * size,
+  };
 }
 
-export function drawMinimap(canvas, world, focus) {
-  if (!canvas || typeof canvas.getContext !== 'function') return false;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return false;
-  const w = canvas.width || MAP_SIZE;
-  const h = canvas.height || MAP_SIZE;
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#20242e';
-  ctx.fillRect(0, 0, w, h);
-  const s = w / (WORLD.half * 2);
-  const px = (x) => (x + WORLD.half) * s;
-  const pz = (z) => (z + WORLD.half) * s;
-  // Laut di selatan.
-  ctx.fillStyle = '#1f8a8a';
-  ctx.fillRect(0, pz(112), w, h - pz(112));
-  // Jalan.
-  ctx.fillStyle = '#55505e';
-  for (const x of AVENUES) ctx.fillRect(px(x - 5), 0, 10 * s, h);
-  for (const z of STREETS) ctx.fillRect(0, pz(z - 5), w, 10 * s);
-  // Bangunan (kotak collider).
-  ctx.fillStyle = '#8a7f74';
-  for (const c of world.colliders || []) {
-    if (c.w !== undefined) ctx.fillRect(px(c.x - c.w / 2), pz(c.z - c.d / 2), c.w * s, c.d * s);
-  }
-  // Kanal pasar terapung.
-  ctx.fillStyle = '#2a7a8a';
-  ctx.fillRect(px(-85), pz(57), 130 * s, 18 * s);
-  // Mobil lalu lintas (titik putih) + parkir (titik abu).
-  ctx.fillStyle = '#f5f5f5';
-  for (const car of world.traffic || []) {
-    ctx.fillRect(px(car.x) - 1.5, pz(car.z) - 1.5, 3, 3);
-  }
-  ctx.fillStyle = '#b8b0a0';
-  for (const v of world.vehicles || []) {
-    ctx.fillRect(px(v.x) - 1.5, pz(v.z) - 1.5, 3, 3);
-  }
-  return true;
-}
+// Gambar minimap ke konteks 2D. data = { player, police, enemies,
+// kancil, vehicles } — semua opsional kecuali player.
+export function drawMinimap(ctx, data, size = MINIMAP_SIZE) {
+  const C = MINIMAP_COLORS;
+  ctx.fillStyle = C.background;
+  ctx.fillRect(0, 0, size, size);
 
-// Penanda misi (kuning) + pemain (panah oranye) + polisi (titik biru).
-export function drawMinimapOverlays(canvas, world, focus) {
-  if (!canvas || typeof canvas.getContext !== 'function') return false;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return false;
-  const w = canvas.width || MAP_SIZE;
-  const s = w / (WORLD.half * 2);
-  const px = (x) => (x + WORLD.half) * s;
-  const pz = (z) => (z + WORLD.half) * s;
-  if (focus && Array.isArray(focus.markers)) {
-    ctx.fillStyle = '#ffd23a';
-    for (const m of focus.markers) {
-      ctx.beginPath();
-      ctx.arc(px(m.x), pz(m.z), 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  if (focus && Array.isArray(focus.police)) {
-    ctx.fillStyle = '#3a6ad8';
-    for (const p of focus.police) {
-      ctx.beginPath();
-      ctx.arc(px(p.x), pz(p.z), 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  if (focus && focus.player) {
-    const p = focus.player;
-    const cx = px(p.x);
-    const cy = pz(p.z);
-    const yaw = p.yaw || 0;
-    ctx.fillStyle = '#ff8a2a';
+  // Laut teal di selatan.
+  const seaTop = worldToMap(0, SEA_Z, size).y;
+  ctx.fillStyle = C.sea;
+  ctx.fillRect(0, seaTop, size, size - seaTop);
+
+  // Plaza alun-alun.
+  const plaza = worldToMap(FOUNTAIN.x, FOUNTAIN.z, size);
+  ctx.fillStyle = C.plaza;
+  ctx.beginPath();
+  ctx.arc(plaza.x, plaza.y, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Jalan: garis tebal abu-abu.
+  ctx.strokeStyle = C.road;
+  ctx.lineWidth = 4;
+  for (const z of ROAD_Z) {
+    const a = worldToMap(WORLD_BOUNDS.minX, z, size);
+    const b = worldToMap(WORLD_BOUNDS.maxX, z, size);
     ctx.beginPath();
-    ctx.moveTo(cx + Math.sin(yaw) * 7, cy + Math.cos(yaw) * 7);
-    ctx.lineTo(cx + Math.sin(yaw + 2.5) * 5, cy + Math.cos(yaw + 2.5) * 5);
-    ctx.lineTo(cx + Math.sin(yaw - 2.5) * 5, cy + Math.cos(yaw - 2.5) * 5);
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  for (const x of ROAD_X) {
+    const a = worldToMap(x, WORLD_BOUNDS.minZ, size);
+    const b = worldToMap(x, WORLD_BOUNDS.maxZ, size);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  // Kancil M2 (penanda oranye muda).
+  if (data.kancil) {
+    const k = worldToMap(data.kancil.x, data.kancil.z, size);
+    ctx.fillStyle = C.kancil;
+    ctx.beginPath();
+    ctx.arc(k.x, k.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Preman (merah).
+  if (data.enemies) {
+    ctx.fillStyle = C.enemy;
+    for (const e of data.enemies) {
+      const p = worldToMap(e.x, e.z, size);
+      ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    }
+  }
+
+  // Polisi (biru).
+  if (data.police) {
+    ctx.fillStyle = C.police;
+    for (const o of data.police) {
+      const p = worldToMap(o.x, o.z, size);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Pemain (segitiga oranye menghadap arah yaw di peta).
+  if (data.player) {
+    const p = worldToMap(data.player.x, data.player.z, size);
+    const yaw = data.player.yaw || 0;
+    // Maju di peta = (-sin yaw, -cos yaw) karena y peta = +z dunia.
+    const fx = -Math.sin(yaw);
+    const fy = -Math.cos(yaw);
+    const px = -fy;
+    const py = fx;
+    ctx.fillStyle = C.player;
+    ctx.beginPath();
+    ctx.moveTo(p.x + fx * 7, p.y + fy * 7);
+    ctx.lineTo(p.x - fx * 5 + px * 5, p.y - fy * 5 + py * 5);
+    ctx.lineTo(p.x - fx * 5 - px * 5, p.y - fy * 5 - py * 5);
     ctx.closePath();
     ctx.fill();
   }
   return true;
 }
 
-// Gambar lengkap: dasar + overlay (satu panggilan dari world.update).
-export function renderMinimap(canvas, world, focus) {
-  if (!drawMinimap(canvas, world, focus)) return false;
-  return drawMinimapOverlays(canvas, world, focus);
+// ---- Tambahan: pabrik minimap terikat canvas (revisi ke-2) ----
+
+// Buat penggambar minimap yang terikat satu elemen canvas: panggil
+// draw(data) tiap frame dari main.js. Canvas di index.html 190x190.
+export function createMinimap(canvas) {
+  const ctx = canvas.getContext('2d');
+  return {
+    canvas,
+    draw(data) {
+      return drawMinimap(ctx, data, MINIMAP_SIZE);
+    },
+  };
 }

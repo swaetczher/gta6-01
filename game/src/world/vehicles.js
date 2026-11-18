@@ -1,115 +1,99 @@
-// ARUNIKA BAY — mobil: bangun mesh + 10 spot parkir incl. Kancil M2 (round 2).
-// Arah hadap mesh: depan mobil menghadap -z lokal, sehingga putaran dunia
-// memakai rumus kontrak: mesh.rotation.y = heading - PI/2.
-import { PALETTE, KANCIL_SPOT } from './config.js';
+// vehicles.js — Mobil kota ARUNIKA BAY: pabrik mesh mobil + parkir.
+// Kancil M2 curian (oranye, terkunci) adalah mobil pertama Bara.
+// Mesh parkir memakai rotasi rotation.y = rotY - PI/2 (kontrak).
 
-const PARKED_COLORS = [0xc23a2e, 0x2e6ac2, 0xe8b820, 0x3a8a4a, 0x8a8f96, 0xd8d2c8, 0x6a3a8a, 0x2a9a8a, 0xb0563a];
+import { PALETTE, PARKED_COUNT, PARKED_LOCKED, PARKING_SPOTS, KANCIL } from './config.js';
 
-// Satu mobil sederhana: bodi + kabin + 4 roda + lampu depan.
+// Warna mobil warga (dipakai parkir + traffic).
+export const CAR_COLORS = [0x2a6fd8, 0xd83a2a, 0xe8e4d8, 0x3f8a4a, 0x8a8a92, 0x2a2a30, 0xc8a83a];
+
+// Rakit satu mobil: bodi + kabin + 4 roda + lampu depan.
+// Mengembalikan { group, wheels } — wheels dipakai world/index untuk putar.
 export function makeCarMesh(THREE, color, type = 'sedan') {
   const group = new THREE.Group();
-  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.45 });
-  const glass = new THREE.MeshStandardMaterial({ color: 0x1a2a3a, roughness: 0.15, metalness: 0.6 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.9 });
-  const bodyH = type === 'truck' ? 1.5 : 0.85;
-  const bodyL = type === 'truck' ? 5.4 : 4.2;
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, bodyH, bodyL), paint);
-  body.position.y = 0.65;
-  body.castShadow = true;
+  const bodyMat = new THREE.MeshStandardMaterial({ color });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1c2733 });
+  const isKancil = type === 'kancil';
+  const bodyLen = isKancil ? 3.4 : 4.2;
+  const bodyWid = 1.9;
+  const bodyH = 0.75;
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(bodyLen, bodyH, bodyWid), bodyMat);
+  body.position.y = 0.62;
   group.add(body);
-  if (type !== 'truck') {
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.75, 2.1), glass);
-    cabin.position.set(0, 1.4, 0.25);
-    cabin.castShadow = true;
-    group.add(cabin);
-  } else {
-    const bed = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 2.6), dark);
-    bed.position.set(0, 1.5, 0.9);
-    group.add(bed);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(bodyLen * 0.52, 0.62, bodyWid - 0.25), darkMat);
+  cabin.position.set(isKancil ? -0.1 : -0.2, 1.28, 0);
+  group.add(cabin);
+  // Lampu depan (depan = +x lokal).
+  const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff2b8 });
+  for (const s of [-0.6, 0.6]) {
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.22, 0.3), lampMat);
+    lamp.position.set(bodyLen / 2 + 0.02, 0.66, s);
+    group.add(lamp);
   }
-  // Lampu depan (depan = -z) + belakang.
-  const lampMat = new THREE.MeshStandardMaterial({
-    color: 0xfff2b8, emissive: 0xffe98a, emissiveIntensity: 0.9,
-  });
-  for (const sx of [-0.6, 0.6]) {
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 0.1), lampMat);
-    head.position.set(sx, 0.7, -bodyL / 2 - 0.03);
-    group.add(head);
-    const tail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.34, 0.2, 0.1),
-      new THREE.MeshStandardMaterial({ color: 0xa01818, emissive: 0x881010, emissiveIntensity: 0.6 }),
-    );
-    tail.position.set(sx, 0.7, bodyL / 2 + 0.03);
-    group.add(tail);
-  }
-  // Roda: silinder diputar 90 derajat, disimpan di userData untuk spinWheels.
-  const wheels = [];
+  // Roda: silinder diputar supaya sumbunya melintang (sumbu z lokal).
   const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 12);
-  for (const [wx, wz] of [[-0.95, -1.35], [0.95, -1.35], [-0.95, 1.35], [0.95, 1.35]]) {
-    const wheel = new THREE.Mesh(wheelGeo, dark);
-    wheel.rotation.z = Math.PI / 2;
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x14141a });
+  const wheels = [];
+  for (const [wx, wz] of [
+    [bodyLen / 2 - 0.7, bodyWid / 2],
+    [bodyLen / 2 - 0.7, -bodyWid / 2],
+    [-bodyLen / 2 + 0.7, bodyWid / 2],
+    [-bodyLen / 2 + 0.7, -bodyWid / 2],
+  ]) {
+    const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+    wheel.rotation.x = Math.PI / 2;
     wheel.position.set(wx, 0.36, wz);
-    wheel.castShadow = true;
     group.add(wheel);
     wheels.push(wheel);
   }
-  group.userData.wheels = wheels;
-  group.userData.type = type;
-  return group;
+  return { group, wheels };
 }
 
-// Putar roda sesuai jarak tempuh (meter) — dipanggil world.update.
-export function spinWheels(mesh, distance) {
-  const wheels = mesh.userData.wheels || [];
-  const angle = distance / 0.36;
-  for (const w of wheels) w.rotation.x += angle;
-}
-
-// 10 spot parkir di tepi jalan — 5 terkunci (salah satunya Kancil M2).
-// heading = arah hadap mobil; mesh diputar rotY - PI/2 sesuai kontrak.
-const PARKED_SPOTS = [
-  { ...KANCIL_SPOT },
-  { x: 44, z: -36, rotY: 0, type: 'sedan', locked: true, label: 'Sedan biru' },
-  { x: -36, z: 84, rotY: Math.PI, type: 'sedan', locked: false, label: 'Sedan merah' },
-  { x: 84, z: 6, rotY: Math.PI / 2, type: 'truck', locked: true, label: 'Truk hijau' },
-  { x: -84, z: -76, rotY: -Math.PI / 2, type: 'sedan', locked: false, label: 'Sedan kuning' },
-  { x: 36, z: 84, rotY: 0, type: 'sedan', locked: true, label: 'Sedan putih' },
-  { x: -44, z: -4, rotY: Math.PI, type: 'taxi', locked: false, label: 'Taksi kuning' },
-  { x: 76, z: -44, rotY: Math.PI / 2, type: 'sedan', locked: false, label: 'Sedan ungu' },
-  { x: -4, z: -84, rotY: 0, type: 'sedan', locked: true, label: 'Sedan abu-abu' },
-  { x: 4, z: 36, rotY: -Math.PI / 2, type: 'sedan', locked: false, label: 'Sedan teal' },
-];
-
-export function buildParkedVehicles(THREE, scene) {
+// Bangun 10 mobil parkir (5 terkunci) + Kancil M2 di petak parkir barat.
+export function buildVehicles(THREE, scene) {
   const vehicles = [];
-  for (let i = 0; i < PARKED_SPOTS.length; i++) {
-    const spot = PARKED_SPOTS[i];
-    const color = spot.type === 'kancil' ? 0xc23a2e : PARKED_COLORS[i % PARKED_COLORS.length];
-    const mesh = makeCarMesh(THREE, color, spot.type);
-    mesh.position.set(spot.x, 0, spot.z);
-    mesh.rotation.y = spot.rotY - Math.PI / 2;
-    scene.add(mesh);
+  const usedSpots = PARKING_SPOTS.slice(0, PARKED_COUNT);
+  for (let i = 0; i < usedSpots.length; i++) {
+    const spot = usedSpots[i];
+    const isKancilSpot = i === 4; // petak ke-5 = Kancil (-88, 44)
+    const color = isKancilSpot ? PALETTE.kancilOrange : CAR_COLORS[i % CAR_COLORS.length];
+    const type = isKancilSpot ? 'kancil' : 'sedan';
+    const { group, wheels } = makeCarMesh(THREE, color, type);
+    const rotY = isKancilSpot ? KANCIL.rotY : Math.PI / 2;
+    group.position.set(spot.x, 0, spot.z);
+    group.rotation.y = rotY - Math.PI / 2;
+    scene.add(group);
     vehicles.push({
-      mesh,
+      mesh: group,
+      wheels,
       x: spot.x,
       z: spot.z,
-      heading: spot.rotY,
+      heading: rotY,
       speed: 0,
-      type: spot.type,
-      locked: spot.locked,
-      label: spot.label,
+      type,
+      locked: isKancilSpot ? true : i < PARKED_LOCKED,
+      label: isKancilSpot ? KANCIL.label : `Mobil warga ${i + 1}`,
       driven: false,
     });
   }
   return vehicles;
 }
 
-// Cari mobil parkir terdekat dari titik (dipakai pemain saat menahan E).
-export function nearestParkedVehicle(vehicles, x, z, maxDist = 4) {
+// Cari Kancil M2 di daftar kendaraan (dipakai main.js staging cover).
+export function findKancil(vehicles) {
+  return vehicles.find((v) => v.type === 'kancil');
+}
+
+// Mobil warga terdekat yang terkunci dari titik (x, z).
+export function nearestLockedVehicle(vehicles, x, z) {
   let best = null;
-  let bestD = maxDist;
+  let bestD = Infinity;
   for (const v of vehicles) {
-    const d = Math.hypot(v.x - x, v.z - z);
+    if (!v.locked || v.driven) continue;
+    const dx = v.x - x;
+    const dz = v.z - z;
+    const d = dx * dx + dz * dz;
     if (d < bestD) {
       bestD = d;
       best = v;
@@ -118,7 +102,35 @@ export function nearestParkedVehicle(vehicles, x, z, maxDist = 4) {
   return best;
 }
 
-// Kancil M2 curian — dicari gameplay saat misi M2 dimulai.
-export function findKancil(vehicles) {
-  return vehicles.find((v) => v.type === 'kancil') || null;
+// ---- Tambahan: helper warna + putar roda (revisi ke-2) ----
+
+// Ganti warna cat mobil (dipakai staging: mobil biru di shot jalan kaki).
+export function recolorCar(vehicle, colorHex) {
+  vehicle.mesh.traverse((child) => {
+    if (child.material && child.material.color && child.isMesh) {
+      // Hanya bodi yang dicat ulang: kenali dari ukuran kotak bodi.
+      if (child.geometry && child.geometry.parameters && child.geometry.parameters.width >= 3) {
+        child.material = child.material.clone();
+        child.material.color.setHex(colorHex);
+      }
+    }
+  });
+}
+
+// Putar roda sesuai jarak tempuh (dipanggil world/index tiap frame).
+export function spinWheels(vehicle, dt) {
+  if (!vehicle.wheels || !vehicle.speed) return;
+  const angle = (vehicle.speed * dt) / 0.36;
+  for (const w of vehicle.wheels) {
+    w.rotation.z -= angle;
+  }
+}
+
+// Pindahkan kendaraan (logika + mesh) ke posisi baru.
+export function placeVehicle(vehicle, x, z, heading) {
+  vehicle.x = x;
+  vehicle.z = z;
+  vehicle.heading = heading;
+  vehicle.mesh.position.set(x, 0, z);
+  vehicle.mesh.rotation.y = heading - Math.PI / 2;
 }

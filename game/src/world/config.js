@@ -1,74 +1,68 @@
-// ARUNIKA BAY — konstanta dunia fajar (tulis ulang round 2, dari CONTRACT.md).
-// Satu-satunya sumber angka dunia: semua modul world + gameplay (via config)
-// membaca dari sini, supaya staging, tes, dan HUD memakai angka yang sama.
+// config.js — Konstanta dunia ARUNIKA BAY (kota fajar di tepi dermaga).
+// Satu-satunya sumber angka dunia: dipakai city, lighting, traffic,
+// pedestrians, vehicles, world/index, dan gameplay (hanya konstanta).
+// Semua jarak dalam meter; sumbu +x = timur, +z = selatan, -z = utara.
 
-// Palet fajar: langit ungu-mawar di atas, oranye di cakrawala, laut teal.
 export const PALETTE = {
-  skyTop: 0x9a5f7e,
-  skyMid: 0xe08a4c,
-  skyHorizon: 0xf2b06e,
-  sun: 0xffd76a,
-  sunGlow: 0xff9d4d,
-  road: 0x33303a,
-  roadEdge: 0x4a4552,
-  roadLine: 0xf5e9c8,
-  zebra: 0xe8e4da,
-  sidewalk: 0x9a8d7c,
-  ground: 0x7d8a5f,
-  plaza: 0xb8a88f,
-  sea: 0x1f8a8a,
-  sand: 0xd9c49a,
-  dock: 0x7a5c38,
-  buildingA: 0xb0563a,
-  buildingB: 0x7a6a8f,
-  buildingC: 0x4a7a8a,
-  buildingD: 0x8f7a4a,
-  roof: 0x3a3340,
-  windowLit: 0xffd98a,
-  windowDark: 0x2c2836,
-  lampPole: 0x2e2a33,
-  lampGlow: 0xffe9a8,
-  treeTrunk: 0x5a4028,
+  skyTop: 0x9a5f7e, // ungu-merah muda di puncak langit fajar
+  skyMid: 0xe8895a, // oranye fajar — warna latar scene
+  skyLow: 0xf2b06e, // kuning-oranye di cakrawala
+  sun: 0xffd75e, // kuning piringan matahari
+  sunHalo: 0xffe9a8,
+  sea: 0x1f7a7a, // teal dermaga
+  seaDeep: 0x146666,
+  ground: 0x46543f, // tanah kota: hijau gelap berdebu
+  plaza: 0x8a7a63, // paving alun-alun
+  road: 0x33333a, // aspal
+  roadLine: 0xe8e4d8, // marka jalan
+  sidewalk: 0x6f6a5e,
+  buildingA: 0x7a6a8a,
+  buildingB: 0x8a7a5a,
+  buildingC: 0x5a7a8a,
+  buildingD: 0xa88a6a,
+  roof: 0x4a3a3a,
+  lampGlow: 0xffc46b,
   treeLeaf: 0x3f7a3a,
-  treeLeaf2: 0x6a9a3a,
-  fountainWater: 0x7ec8d8,
+  treeTrunk: 0x5a4632,
   containerPurple: 0x7a4a9a,
   containerGreen: 0x3f8a4a,
-  containerRust: 0xa85a2a,
-  warehouse: 0x8a8f96,
-  warehouseDoor: 0x1a1a20,
-  canalWater: 0x2a7a8a,
-  boatHull: 0x8a4a2a,
-  marketAwning: 0xd84a4a,
+  warehouse: 0x5a5a66,
+  doorBlack: 0x14141a,
+  kancilOrange: 0xe86a1a, // oranye Kancil curian M2
+  policeBlue: 0x2a6fd8,
+  baraOrange: 0xf08a1a, // oranye jaket Bara Kelana
 };
 
-// Geometri kota: grid jalan 5x5, blok 30 m, jalan selebar 10 m.
-export const WORLD = {
-  half: 130,
-  size: 260,
-  roadWidth: 10,
-  blockSize: 30,
-  roadHalf: 5,
-  seaStartZ: 112,
-  seaEndZ: 260,
-  groundY: 0,
-};
+// Batas kota yang bisa dijelajahi pemain (meter).
+export const WORLD_BOUNDS = { minX: -118, maxX: 118, minZ: -118, maxZ: 128 };
 
-export const AVENUES = [-80, -40, 0, 40, 80];
-export const STREETS = [-80, -40, 0, 40, 80];
+// Jaringan jalan: 3 avenida timur-barat dan 3 utara-selatan, lebar 10 m.
+export const ROAD_WIDTH = 10;
+export const ROAD_Z = [-60, 0, 60]; // avenida timur-barat (garis z tetap)
+export const ROAD_X = [-60, 0, 60]; // avenida utara-selatan (garis x tetap)
+export const ROAD_EXTENT = 110; // jalan membentang -110..110
 
+// Matahari fajar — bola kuning di utara, jauh di dalam far plane 600.
+// Jari-jari 120 (bukan 480): r=480 menelan kamera jadi dinding kuning.
+export const SUN_RADIUS = 120;
+export const SUN_POSITION = { x: 0, y: 200, z: -520 };
+export const SUN_HALO_RADIUS = 168;
+
+// Jumlah penghuni jalan.
 export const TRAFFIC_COUNT = 14;
 export const PEDESTRIAN_COUNT = 28;
 export const PARKED_COUNT = 10;
+export const PARKED_LOCKED = 5;
 
-// Titik spawn pemain (dekat Alun-Alun) dan Kancil curian M2.
-export const SPAWN = {
-  player: { x: 8, z: 6, yaw: Math.PI },
-  kancil: { x: -88, z: 44 },
-};
+// Kecepatan (m/detik).
+export const TRAFFIC_SPEED_MIN = 6;
+export const TRAFFIC_SPEED_MAX = 10;
+export const PED_SPEED_MIN = 0.9;
+export const PED_SPEED_MAX = 1.7;
+export const POLICE_CHASE_SPEED = 7.5;
 
-// Spot parkir Kancil M2 — mobil pertama yang dicuri (M2 "Mobil Pertama").
-export const KANCIL_SPOT = {
+// Kancil M2 curian — mobil pertama Bara.
+export const KANCIL = {
   x: -88,
   z: 44,
   rotY: Math.PI / 2,
@@ -77,35 +71,35 @@ export const KANCIL_SPOT = {
   label: 'M2 — Kancil curian',
 };
 
-// Landmark yang dipakai staging shot + tes dunia.
-export const LANDMARKS = {
-  plaza: { x: 0, z: 0, name: 'Alun-Alun Arunika' },
-  warehouse: { x: -66, z: 106, name: 'Gudang Kontainer' },
-  dock: { x: -40, z: 108, name: 'Dermaga Arunika' },
-  marketCanal: { x: -20, z: 64, name: 'Pasar Terapung' },
-  lanternVillage: { x: -52, z: -52, name: 'Kampung Lentera' },
-  businessDistrict: { x: 0, z: 44, name: 'Distrik Niaga' },
+// Titik spawn awal pemain dan Kancil.
+export const SPAWN_POINTS = {
+  player: { x: 0, z: 8, yaw: Math.PI },
+  kancil: { x: -88, z: 44 },
 };
 
-// Distrik bernama — dipakai HUD + minimap + staging (kotak x/z inklusif).
-export const DISTRICTS = [
-  { name: 'Alun-Alun Arunika', x0: -20, x1: 20, z0: -20, z1: 20 },
-  { name: 'Distrik Niaga', x0: -20, x1: 60, z0: 20, z1: 60 },
-  { name: 'Kampung Lentera', x0: -100, x1: -20, z0: -100, z1: -20 },
-  { name: 'Dermaga Arunika', x0: -100, x1: 20, z0: 80, z1: 130 },
-  { name: 'Pasar Terapung', x0: -70, x1: 30, z0: 56, z1: 76 },
-  { name: 'Kampung Pesisir', x0: 20, x1: 100, z0: 80, z1: 130 },
-];
+// Air mancur alun-alun (pusat plaza).
+export const FOUNTAIN = { x: -12, z: -12, radius: 6 };
 
-// Nama distrik untuk satu titik; jatuh ke nama umum bila di luar kotak.
+// Gudang kontainer pelabuhan + dermaga.
+export const WAREHOUSE = { x: -66, z: 104, w: 26, d: 16 };
+export const DOCK = { x: -66, z: 122 };
+export const SEA_Z = 132; // laut teal mulai di garis z ini
+
+// Zebra cross di persimpangan avenida utama (tempat shot jalan kaki).
+export const ZEBRA = { x: 0, z: 0, width: 10, stripes: 7 };
+
+// Nama distrik berdasarkan posisi — dipakai HUD + minimap.
 export function districtAt(x, z) {
-  for (const d of DISTRICTS) {
-    if (x >= d.x0 && x <= d.x1 && z >= d.z0 && z <= d.z1) return d.name;
-  }
-  return 'Arunika Bay';
+  if (z >= 80) return 'Dermaga Arunika';
+  if (x <= -40 && z <= -40) return 'Kampung Lentera';
+  if (Math.abs(x + 12) < 26 && Math.abs(z + 12) < 26) return 'Alun-Alun Arunika';
+  if (x >= 40 && z >= 20) return 'Pasar Terapung';
+  if (Math.abs(x) < 30 && Math.abs(z) < 30) return 'Alun-Alun Arunika';
+  return 'Distrik Niaga';
 }
 
-// RNG deterministik (mulberry32) — penempatan gedung/pohon stabil tiap load.
+// Generator angka semu deterministik (seed tetap) supaya kota sama di
+// setiap pemuatan — penting untuk screenshot yang bisa diulang.
 export function mulberry32(seed) {
   let a = seed >>> 0;
   return function next() {
@@ -117,17 +111,65 @@ export function mulberry32(seed) {
   };
 }
 
-// Bundel konstanta yang dikembalikan buildWorld sebagai `world.config`.
-export const CONFIG = {
-  PALETTE,
-  WORLD,
-  AVENUES,
-  STREETS,
-  TRAFFIC_COUNT,
-  PEDESTRIAN_COUNT,
-  PARKED_COUNT,
-  SPAWN,
-  KANCIL_SPOT,
-  LANDMARKS,
-  DISTRICTS,
+export const CITY_SEED = 20261118;
+
+// ---- Tambahan: angka staging shot + detail kota (revisi ke-2) ----
+
+// Posisi staging shot (kalibrasi terverifikasi round 2, dipakai main.js).
+export const SHOT_STAGING = {
+  cover: {
+    car: { x: 0, z: 44, heading: Math.PI / 2, speedKmh: 94 },
+    police: [
+      { x: 5, z: -6 },
+      { x: -5, z: -14 },
+    ],
+  },
+  foot: {
+    player: { x: 0, z: 0, yaw: Math.PI },
+    blueCar: { x: 6, z: 0.5 },
+    heroPed: { x: 3.5, z: -2.5 },
+  },
+  heist: {
+    player: { x: -66, z: 94, yaw: Math.PI },
+    guards: [
+      { x: -52, z: 94 },
+      { x: -80, z: 94 },
+      { x: -58, z: 106 },
+    ],
+  },
+  vista: {
+    player: { x: -52, z: -52, yaw: Math.PI * 0.25 },
+    camera: { x: -52, y: 7, z: -26 },
+    look: { x: -38, y: 30, z: -260 },
+  },
+};
+
+// Detail kota: tinggi gedung, jarak lampu, jarak pohon.
+export const BUILDING_HEIGHT_MIN = 9;
+export const BUILDING_HEIGHT_MAX = 30;
+export const LAMP_SPACING = 22;
+export const TREE_SPACING = 16;
+export const PARKING_SPOTS = [
+  { x: -88, z: 20 },
+  { x: -88, z: 26 },
+  { x: -88, z: 32 },
+  { x: -88, z: 38 },
+  { x: -88, z: 44 },
+  { x: -88, z: 50 },
+  { x: -88, z: 56 },
+  { x: -88, z: 62 },
+  { x: -80, z: 20 },
+  { x: -80, z: 62 },
+];
+
+// Warna minimap 2D (dipakai minimap.js, bukan THREE).
+export const MINIMAP_COLORS = {
+  background: '#1c2430',
+  road: '#5a6270',
+  sea: '#1f7a7a',
+  plaza: '#8a7a63',
+  player: '#f08a1a',
+  police: '#2a6fd8',
+  enemy: '#d83a2a',
+  kancil: '#e86a1a',
 };

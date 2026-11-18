@@ -1,139 +1,112 @@
-// wanted.js — Level buronan (wanted) ARUNIKA BAY.
-//
-// Panas (heat) 0–100 naik setiap Bara berbuat onar (mencuri mobil, memukul
-// preman, menembak) lalu mendingin sendiri kalau Bara bersembunyi. Bintang
-// dihitung dari panas: 0 = BERSIH, 1–5 = buronan. Polisi membaca bintang
-// ini untuk memutuskan mengejar atau berhenti.
-//
-// Modul ini murni logika angka — tanpa THREE, tanpa DOM — supaya mudah dites
-// di Node. Satu-satunya ketergantungan luar adalah objek jam yang disuntik
-// lewat `createWanted` bila pemanggil mau mengunci waktu di tes.
+// wanted.js — Panas buronan Arunika Bay: heat 0-100 menjadi 0-5 bintang.
+// Bintang naik saat Bara bikin onar, turun pelan saat ia menghilang dari
+// pandangan polisi. Modul ini murni logika angka: tanpa DOM, tanpa scene,
+// supaya bisa diuji langsung dari Node.
 
-export const HEAT_MAX = 100;
-export const HEAT_MIN = 0;
-export const STARS_MAX = 5;
+// Ambang panas untuk tiap tingkat bintang. Batas bawah tiap tingkat:
+// bintang 1 mulai 1, bintang 2 mulai 20, bintang 3 mulai 40, dan begitu
+// seterusnya sampai bintang 5 di 80. Heat 0 berarti kota bersih.
+export const HEAT_STEPS = [1, 20, 40, 60, 80];
+export const MAX_HEAT = 100;
+export const MAX_STARS = 5;
 
-// Ambang panas untuk tiap bintang. Bintang 1 mulai dari panas 1 — jadi
-// panas 0 selalu berarti BERSIH, bukan satu bintang.
-export const STAR_THRESHOLDS = [0, 1, 21, 41, 61, 81];
-
-// Laju panas mendingin per detik saat Bara tidak berbuat onar.
-export const HEAT_DECAY_PER_SECOND = 1.5;
-
-// Panas yang ditambahkan tiap perbuatan onar.
-export const HEAT_FOR_STEAL = 25;
-export const HEAT_FOR_ASSAULT = 10;
-export const HEAT_FOR_SHOOT = 15;
-export const HEAT_FOR_KILL = 20;
-
-/** Panas (0–100) -> jumlah bintang (0–5). */
+// Ubah satu angka heat menjadi jumlah bintang (0-5).
 export function starsForHeat(heat) {
-  const h = clampHeat(heat);
-  if (h <= 0) return 0;
-  if (h < 21) return 1;
-  if (h < 41) return 2;
-  if (h < 61) return 3;
-  if (h < 81) return 4;
-  return 5;
+  const h = Math.max(0, Math.min(MAX_HEAT, Number(heat) || 0));
+  let stars = 0;
+  for (const step of HEAT_STEPS) {
+    if (h >= step) stars += 1;
+  }
+  return Math.min(MAX_STARS, stars);
 }
 
-/** Bintang -> panas terendah yang menghasilkan bintang itu. */
-export function heatForStars(stars) {
-  const s = Math.max(0, Math.min(STARS_MAX, Math.floor(stars) || 0));
-  return STAR_THRESHOLDS[s];
+// Gambar bintang untuk HUD: bintang penuh dan bintang kosong.
+export function starsText(stars) {
+  const full = Math.max(0, Math.min(MAX_STARS, Math.round(stars)));
+  return '★'.repeat(full) + '☆'.repeat(MAX_STARS - full);
 }
 
-/** Bintang -> label HUD: "BERSIH" atau deretan ★/☆. */
-export function wantedLabel(stars) {
-  const s = Math.max(0, Math.min(STARS_MAX, Math.floor(stars) || 0));
-  if (s === 0) return 'BERSIH';
-  return '★'.repeat(s) + '☆'.repeat(STARS_MAX - s);
-}
-
-/** Jepit panas ke rentang 0–100 (NaN dianggap 0). */
-export function clampHeat(heat) {
-  const h = Number(heat);
-  if (!Number.isFinite(h)) return 0;
-  if (h < HEAT_MIN) return HEAT_MIN;
-  if (h > HEAT_MAX) return HEAT_MAX;
-  return h;
-}
-
-/**
- * Status buronan yang hidup: menyimpan panas, menghitung bintang, dan
- * mendinginkan panas seiring waktu. `onChange` dipanggil setiap kali
- * jumlah bintang berubah (HUD + polisi mendengarkannya).
- *
- * @param {number} [initialHeat=0] panas awal
- * @param {(stars:number, heat:number)=>void} [onChange] dipanggil saat bintang berubah
- */
-export function createWanted(initialHeat = 0, onChange) {
-  let heat = clampHeat(initialHeat);
+// Buat pelacak buronan. onChange dipanggil tiap kali jumlah bintang
+// berubah, supaya main.js bisa menaikkan agresivitas polisi.
+export function createWanted(opts = {}) {
+  const onChange = typeof opts.onChange === 'function' ? opts.onChange : null;
+  const decayPerSecond = opts.decayPerSecond ?? 1.1;
+  const calmDelay = opts.calmDelay ?? 6;
+  let heat = Math.max(0, Math.min(MAX_HEAT, opts.startHeat ?? 0));
   let stars = starsForHeat(heat);
-  const notify = typeof onChange === 'function' ? onChange : null;
+  let quietFor = 0;
 
-  function emitIfChanged() {
-    const next = starsForHeat(heat);
-    if (next !== stars) {
-      stars = next;
-      if (notify) notify(stars, heat);
+  function emitIfChanged(before) {
+    const now = starsForHeat(heat);
+    if (now !== before) {
+      stars = now;
+      if (onChange) onChange({ heat, stars: now });
     }
   }
 
-  return {
-    /** Panas saat ini (0–100). */
-    get heat() {
-      return heat;
-    },
-    /** Bintang saat ini (0–5). */
-    get stars() {
-      return stars;
-    },
-    /** Label HUD: "BERSIH" atau ★★★★☆. */
-    get label() {
-      return wantedLabel(stars);
-    },
-    /** Apakah Bara sedang diburu (bintang >= 1). */
-    get isWanted() {
-      return stars >= 1;
-    },
-    /** Apakah buronan berat (bintang >= 3, polisi mengejar agresif). */
-    get isHot() {
-      return stars >= 3;
-    },
-    /** Tambah panas (mis. mencuri mobil). */
-    addHeat(amount) {
-      heat = clampHeat(heat + (Number(amount) || 0));
-      emitIfChanged();
-      return heat;
-    },
-    /** Setel panas langsung (dipakai staging + save). */
+  const api = {
+    get heat() { return heat; },
+    get stars() { return stars; },
+    get quietFor() { return quietFor; },
+
     setHeat(value) {
-      heat = clampHeat(value);
-      emitIfChanged();
+      const before = stars;
+      heat = Math.max(0, Math.min(MAX_HEAT, Number(value) || 0));
+      quietFor = 0;
+      emitIfChanged(before);
       return heat;
     },
-    /** Dinginkan panas selama `dt` detik. */
-    decay(dt) {
-      if (heat <= 0) return heat;
-      heat = clampHeat(heat - HEAT_DECAY_PER_SECOND * Math.max(0, dt || 0));
-      emitIfChanged();
+
+    addHeat(amount) {
+      const before = stars;
+      heat = Math.max(0, Math.min(MAX_HEAT, heat + (Number(amount) || 0)));
+      quietFor = 0;
+      emitIfChanged(before);
       return heat;
     },
-    /** Bersihkan semua panas (mis. setelah lolos dari kejaran). */
-    clear() {
-      heat = 0;
-      emitIfChanged();
+
+    // Turunkan panas pelan-pelan. Hanya bekerja setelah Bara diam tanpa
+    // onar selama calmDelay detik — polisi tidak lupa secepat itu.
+    coolDown(amount) {
+      const before = stars;
+      heat = Math.max(0, heat - (Number(amount) || 0));
+      emitIfChanged(before);
       return heat;
     },
-    /** Cuplikan untuk save game. */
+
+    // Maju satu frame: hitung waktu tenang, lalu dinginkan panasnya.
+    update(dt, trouble = false) {
+      if (trouble) {
+        quietFor = 0;
+        return heat;
+      }
+      quietFor += Math.max(0, dt);
+      if (quietFor >= calmDelay && heat > 0) {
+        api.coolDown(decayPerSecond * dt);
+      }
+      return heat;
+    },
+
+    // Penanda waktu: apakah kota sedang tenang (tanpa bintang)?
+    get calm() { return stars === 0; },
+
     snapshot() {
-      return { heat };
+      return { heat, stars, quietFor };
     },
-    /** Pulihkan dari save game. */
+
     restore(data) {
-      if (data && typeof data.heat === 'number') this.setHeat(data.heat);
+      if (!data || typeof data !== 'object') return heat;
+      const before = stars;
+      heat = Math.max(0, Math.min(MAX_HEAT, Number(data.heat) || 0));
+      quietFor = Number(data.quietFor) || 0;
+      emitIfChanged(before);
       return heat;
+    },
+
+    reset() {
+      return api.setHeat(0);
     },
   };
+
+  return api;
 }

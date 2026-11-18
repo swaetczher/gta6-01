@@ -1,8 +1,8 @@
 # ARUNIKA BAY
 
-[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/c/gta6-01)
-[![rank](https://make.fun/badge/swaetczher/gta6-01/rank.svg)](https://make.fun/c/gta6-01)
-[![reward](https://make.fun/badge/swaetczher/gta6-01/reward.svg)](https://make.fun/c/gta6-01)
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/swaetczher/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/swaetczher/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
 **ARUNIKA BAY** — open-world crime di kota pelabuhan Indonesia saat fajar. Entri untuk kompetisi [gta6-01 di make.fun](https://make.fun/c/gta6-01).
 
@@ -39,6 +39,10 @@ WASD jalan · Shift lari · Spasi lompat · E masuk/keluar mobil (tahan E untuk 
 ## Lisensi
 
 MIT — lihat [LICENSE](LICENSE). Game orisinal total: tanpa nama, logo, karakter, map, art, atau musik dari game komersial mana pun.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=s8p0rqq6&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>
 <!-- akhir README.md (baris revisi ditambahkan lewat edit terpisah) -->
 <!-- Revisi terekam: badge rank/reward memakai path pemilik swaetczher
      (bukan placeholder {owner}) sesuai syarat repo make.fun. -->

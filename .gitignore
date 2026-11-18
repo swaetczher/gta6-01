@@ -4,6 +4,5 @@ node_modules/
 gta6-01-kit/
 *.tar.gz
 *.bin
-# --- akhir .gitignore (baris revisi ditambahkan lewat edit terpisah) ---
-# Revisi terekam: out/ (hasil main.ts) + kit tarball tidak masuk repo.
-
+# out/ = hasil main.ts lokal (dossier + salinan game), bukan bagian submit.
+# gta6-01-kit/ + *.tar.gz/*.bin = kit kompetisi + arsip unduhan, jangan ikut commit.

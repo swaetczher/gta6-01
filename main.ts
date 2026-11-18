@@ -1,55 +1,70 @@
-// main.ts — ARUNIKA BAY (Make Fun gta6-01): program penyerahan entri.
-// Node 22, standard library saja, tanpa install dan tanpa network.
-// Menyalin game/ + screenshots/ dari sebelah file ini ke direktori
-// output (env MAKEFUN_OUTPUT_DIR, default /output di container grader),
-// lalu menulis /output/dossier.json lewat buildDossier dari
-// ./vendor/makefun-game.ts (file kit — JANGAN diubah).
+// main.ts — Entrypoint ARUNIKA BAY (gta6-01) untuk Make Fun.
 //
-// Pemakaian lokal:
+// Node 22, standard library saja, tanpa network. Program ini menyerahkan
+// game ke grader: menyalin folder game/ dan screenshots/ dari samping file
+// ini ke direktori output, lalu menulis dossier.json (ringkasan yang dibaca
+// juri) dengan library make.fun yang di-vendor.
+//
+// Di luar container grader, MAKEFUN_OUTPUT_DIR menggantikan /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-// Di container grader, MAKEFUN_OUTPUT_DIR tidak di-set sehingga output
-// jatuh ke /output. Program ini deterministik: dua run menulis byte
-// yang sama persis selama isi game/ + screenshots/ tidak berubah.
+//
+// Batas yang dipakai (dari gate kompetisi): paling banyak 4 screenshot,
+// masing-masing paling besar 262.144 byte; game paling banyak 993 file /
+// 48 MiB; teks dossier paling banyak 163.840 byte.
+
 import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
+/** Slug kompetisi + nama entri game ini. */
+export const ARUNIKA_BAY_ENTRY = 'gta6-01';
+
+/** Screenshot pertama menurut nama = cover dossier. */
+export const ARUNIKA_BAY_COVER = '1-cover-chase.jpg';
+
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const gameDir = join(here, 'game');
-const shotsDir = join(here, 'screenshots');
 
-// Guard awal: game/index.html wajib ada — tanpa itu entri bukan game
-// playable dan grader pasti menolak. Gagal cepat dengan pesan jelas.
-if (!existsSync(join(gameDir, 'index.html'))) {
-  console.error('ARUNIKA BAY: game/index.html tidak ditemukan di', gameDir);
+// --- Penjaga: game/index.html wajib ada, kalau tidak penyerahan ditolak. ---
+const entryHtml = join(here, 'game', 'index.html');
+if (!existsSync(entryHtml)) {
+  console.error(`ARUNIKA BAY: game/index.html tidak ditemukan di ${here} — batal.`);
   process.exit(1);
 }
 
+// --- Salin game/ + screenshots/ ke output. ---
 mkdirSync(out, { recursive: true });
-cpSync(gameDir, join(out, 'game'), { recursive: true });
+cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+console.log('ARUNIKA BAY: game/ disalin ke', join(out, 'game'));
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(shotsDir)) {
-  cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 }
 
-// Ringkasan isi untuk log: jumlah file game + screenshot (cover =
-// file pertama menurut nama — harus adegan kejar-kejaran polisi).
-const shotNames = existsSync(shotsDir)
-  ? readdirSync(shotsDir).filter((n) => statSync(join(shotsDir, n)).isFile()).sort()
-  : [];
-console.log(`ARUNIKA BAY: game/ disalin ke ${out}/game`);
-console.log(`ARUNIKA BAY: ${shotNames.length} screenshot (${shotNames.join(', ') || 'belum ada'})`);
-if (shotNames.length > 0) console.log(`ARUNIKA BAY: cover = ${shotNames[0]}`);
-if (shotNames.length < 3) {
-  console.warn('ARUNIKA BAY: PERINGATAN — screenshot kurang dari 3; gate meminta 3-4 file.');
+// --- Daftar screenshot yang ikut diserahkan (maksimal 4, urut nama). ---
+const shotDir = join(here, 'screenshots');
+let shots: string[] = [];
+if (existsSync(shotDir)) {
+  shots = readdirSync(shotDir)
+    .filter((name) => /\.(png|jpe?g)$/i.test(name))
+    .sort()
+    .slice(0, 4);
 }
+for (const shot of shots) {
+  const size = statSync(join(shotDir, shot)).size;
+  if (size > 262144) {
+    console.error(`ARUNIKA BAY: screenshot ${shot} ${size} byte > 262144 — batal.`);
+    process.exit(1);
+  }
+}
+console.log(`ARUNIKA BAY: ${shots.length} screenshot (${shots.join(', ')})`);
+console.log(`ARUNIKA BAY: cover = ${ARUNIKA_BAY_COVER}`);
 
-// Caps dari gate.json kompetisi (lihat riset.md): hanya text_max_bytes
-// yang membentuk byte dossier; caps lain menolak entri yang memang
-// akan ditolak scorer (screenshot >4 / >256 KiB, game/ >993 file /
-// 48 MiB, path game/ >1000 byte).
+// --- Tulis dossier.json: ringkasan yang dibaca juri. ---
+// Caps scorer: teks paling banyak 163.840 byte; screenshot paling banyak 4
+// @ 262.144 byte; game paling banyak 993 file / 48 MiB; path di bawah game/
+// paling panjang 1.000 byte. buildDossier menolak entri yang melanggar.
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {
@@ -60,10 +75,5 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
-console.log('ARUNIKA BAY: dossier.json ditulis — entri siap diperiksa (makefun check).');
-// --- akhir main.ts (baris revisi ditambahkan lewat edit terpisah) ---
-// Revisi terekam: guard game/index.html + log jumlah screenshot/cover
-// ditambahkan supaya kegagalan pengemasan ketahuan di log sebelum
-// dossier ditulis — bukan sesudah submit ditolak gate.
-export const ARUNIKA_BAY_ENTRY = 'gta6-01';
-export const ARUNIKA_BAY_COVER_HINT = '1-cover-chase.jpg';
+console.log('ARUNIKA BAY: dossier.json ditulis');
+console.log(`ARUNIKA BAY: entri ${ARUNIKA_BAY_ENTRY} siap diserahkan`);

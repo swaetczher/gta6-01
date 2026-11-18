@@ -1,194 +1,98 @@
-// index.js — Pintu masuk modul dunia ARUNIKA BAY.
-// `createWorld(THREE, scene)` membangun seluruh kota dan mengembalikan
-// objek dunia yang dipakai Gameplay (lihat world-api.md di folder job).
-// Kontrak yang dijamin:
-// - bounds +-110 m; colliders gedung (AABB); cars (parkir + traffic);
-// - landmarks; playerSpawn; hospital + policeStation;
-// - resolveCircle(pos, radius); isWalkable(x, z);
-// - setDrivenCar(car); update(dt, state) — traffic, pejalan kaki,
-//   lampu lalu lintas, kamera, dan animasi dunia.
-
-import {
-  WORLD_HALF,
-  ROAD_SPACING,
-  DISTRICTS,
-  LANDMARKS,
-  MISSION_POINTS,
-  PLAYER_SPAWN,
-  HOSPITAL_POS,
-  POLICE_POS,
-  POLICE_SPAWN,
-  clampToWorld,
-  districtAt,
-} from './config.js';
+// ARUNIKA BAY — perakit dunia: buildWorld(THREE, scene) (tulis ulang round 2).
+// Kontrak (CONTRACT.md): kembalikan { scene, config, colliders, roads,
+// vehicles, pedestrians, traffic, spawnPoints, update(dt, input) }.
+// Loop sinkron mesh mobil driven HANYA ada di update() sini, satu tempat.
+import { CONFIG, SPAWN } from './config.js';
 import { buildCity } from './city.js';
-import { buildSky, buildLighting, buildStreetLights, buildLighthouseLight } from './lighting.js';
-import { buildParkedCars, spinWheels } from './vehicles.js';
-import { spawnTraffic, updateTraffic, buildTrafficLights, updateTrafficLights } from './traffic.js';
+import { buildLighting, updateLighting } from './lighting.js';
+import { buildRoadGraph, spawnTraffic, updateTraffic } from './traffic.js';
 import { spawnPedestrians, updatePedestrians } from './pedestrians.js';
-import { resolveCircle as resolveCircleFn, isWalkable as isWalkableFn } from './collision.js';
-import { updateCamera, snapCamera } from './camera.js';
-import { getMinimapData } from './minimap.js';
+import { buildParkedVehicles, spinWheels } from './vehicles.js';
+import { makeCollision } from './collision.js';
+import { renderMinimap } from './minimap.js';
 
-export function createWorld(THREE, scene, options = {}) {
-  const seed = options.seed ?? 20261118;
-
-  // 1) Langit + pencahayaan fajar.
-  const sky = buildSky(THREE, scene);
+export function buildWorld(THREE, scene) {
+  const city = buildCity(THREE, scene);
   const lighting = buildLighting(THREE, scene);
-
-  // 2) Kota prosedural (gedung, jalan, plaza, kanal, mercusuar, ...).
-  const city = buildCity(THREE, scene, seed);
-  const street = buildStreetLights(THREE, scene, city.lamps);
-  const lighthouse = buildLighthouseLight(THREE, scene);
-
-  // 3) Kendaraan: 10 parkir + belasan traffic AI.
-  const parkedCars = buildParkedCars(THREE, scene);
-  const traffic = spawnTraffic(THREE, scene);
-  const trafficLightRigs = buildTrafficLights(THREE, scene);
-
-  // 4) Pejalan kaki.
+  const roads = buildRoadGraph();
+  const vehicles = buildParkedVehicles(THREE, scene);
+  const traffic = spawnTraffic(THREE, scene, roads);
   const pedestrians = spawnPedestrians(THREE, scene);
-
-  // Sinar mercusuar: cari cone beam di grup kota, putar pelan tiap frame.
-  let lighthouseBeam = null;
-  city.group.traverse((obj) => {
-    if (obj.geometry && obj.geometry.type === 'ConeGeometry') lighthouseBeam = obj;
-  });
-
-  // Semua mobil hidup dalam satu daftar (kontrak Gameplay).
-  const cars = [...parkedCars, ...traffic.cars];
-  let drivenCar = null;
-  let time = 0;
+  const collision = makeCollision(city.colliders);
+  const colliders = city.colliders;
 
   const world = {
-    THREE,
     scene,
-    seed,
-    // Batas dunia.
-    bounds: { half: WORLD_HALF, minX: -WORLD_HALF, maxX: WORLD_HALF, minZ: -WORLD_HALF, maxZ: WORLD_HALF },
-    roadSpacing: ROAD_SPACING,
-    districts: DISTRICTS,
-    landmarks: LANDMARKS,
-    missionPoints: MISSION_POINTS,
-    // Spawn + titik penting.
-    playerSpawn: { ...PLAYER_SPAWN },
-    hospital: { ...HOSPITAL_POS },
-    policeStation: { ...POLICE_POS },
-    policeSpawn: { ...POLICE_SPAWN },
-    // Geometri + collider.
-    buildings: city.buildings,
-    colliders: city.colliders,
-    lamps: city.lamps,
-    trees: city.trees,
-    boats: city.boats,
-    // Sistem hidup.
-    cars,
-    parkedCars,
-    trafficCars: traffic.cars,
-    traffic,
+    config: CONFIG,
+    colliders,
+    collision,
+    roads,
+    vehicles,
     pedestrians,
-    trafficLightRigs,
+    traffic,
+    landmarks: city.landmarks,
     lighting,
-    sky,
-    lightInventory: [...street.lightInventory, lighthouse.inventory],
-    time: 0,
-    drivenCar: null,
-
-    // --- Kontrak tabrakan ---
-    // Selesaikan tabrakan lingkaran terhadap gedung + batas dunia.
-    resolveCircle(pos, radius) {
-      return resolveCircleFn(pos, radius, this.colliders, WORLD_HALF);
+    spawnPoints: {
+      player: { ...SPAWN.player },
+      kancil: { ...SPAWN.kancil },
     },
-    // Apakah titik bisa dilalui pejalan kaki / pemain.
-    isWalkable(x, z) {
-      return isWalkableFn(x, z, this.colliders, WORLD_HALF);
-    },
-    clampToWorld(x, z) {
-      return clampToWorld(x, z);
-    },
-    districtAt(x, z) {
-      return districtAt(x, z);
-    },
-
-    // --- Kontrak kendaraan ---
-    // Tandai mobil sedang dikemudikan pemain (traffic berhenti
-    // menggerakkannya; kamera beralih ke mode drive). Panggil dengan
-    // null saat pemain keluar mobil.
-    setDrivenCar(car) {
-      if (drivenCar) drivenCar.driven = false;
-      drivenCar = car || null;
-      if (drivenCar) drivenCar.driven = true;
-      this.drivenCar = drivenCar;
-      return drivenCar;
-    },
-    getDrivenCar() {
-      return drivenCar;
-    },
-
-    // --- Kontrak minimap ---
-    getMinimapData(player = null, missionTarget = null) {
-      return getMinimapData(this, player, missionTarget);
-    },
-
-    // --- Kontrak kamera ---
-    updateCamera(camera, opts) {
-      return updateCamera(camera, { ...opts, colliders: this.colliders });
-    },
-    snapCamera(camera, opts) {
-      return snapCamera(camera, { ...opts, colliders: this.colliders });
-    },
-
-    // --- Update per frame ---
-    // `state`: { player {x,z,heading}, camera, cameraMode, drivingCar }
-    // - player: dipakai pejalan kaki untuk menghindar.
-    // - camera + cameraMode ('foot' | 'drive' | 'vista'): kamera digerakkan
-    //   di sini bila camera diberikan; bila tidak, Gameplay yang memanggil
-    //   world.updateCamera sendiri.
-    // - drivingCar: mobil yang dikemudikan (untuk kamera drive).
-    update(dt, state = {}) {
-      const step = Math.max(0, Math.min(0.05, dt || 0.016));
-      time += step;
-      this.time = time;
-      updateTraffic(traffic, step, time);
-      // Sinkron mesh mobil yang dikemudikan (Repair-2): updateTraffic
-      // melewati mobil driven (`if (car.driven) continue`), dan main.js
-      // hanya menyinkron mesh mobil dunia stub — jadi DUNIA yang harus
-      // menggerakkan mesh mobil driven tiap frame dari car.x/z/heading.
-      // Kunci pada flag car.driven (bukan variabel drivenCar internal):
-      // staging cover main.js menandai car.driven = true langsung tanpa
-      // setDrivenCar. Putaran memakai konvensi yang sama dengan traffic
-      // (Repair): badan sumbu-X, rotation.y = heading - PI/2, supaya mesh
-      // menghadap arah maju logika (sin h, cos h).
-      for (const car of cars) {
-        if (!car.driven || !car.mesh) continue;
+    elapsed: 0,
+    // Majukan traffic, pejalan kaki, sinkron mesh mobil driven, minimap.
+    update(dt, input) {
+      const step = Math.min(dt, 0.05);
+      world.elapsed += step;
+      updateTraffic(traffic, roads, step);
+      updatePedestrians(pedestrians, step, world.elapsed);
+      updateLighting(lighting, step, world.elapsed);
+      // Sinkron mesh mobil driven — SATU-SATUNYA tempat sinkron ini.
+      for (const car of vehicles) {
+        if (!car.driven) continue;
         car.mesh.position.set(car.x, 0, car.z);
         car.mesh.rotation.y = car.heading - Math.PI / 2;
         spinWheels(car.mesh, (car.speed || 0) * step);
       }
-      updateTrafficLights(trafficLightRigs, time);
-      updatePedestrians(pedestrians, step, state.player || null, this.colliders);
-      // Sinar mercusuar berputar pelan (beam mesh di grup kota).
-      if (lighthouseBeam) lighthouseBeam.rotation.y = time * 0.25;
-      if (state.camera) {
-        const mode = state.cameraMode || (state.drivingCar ? 'drive' : 'foot');
-        this.updateCamera(state.camera, {
-          mode,
-          target: state.player || this.playerSpawn,
-          car: state.drivingCar || null,
-          dt: step,
-        });
+      // Minimap 2D bila canvas #minimap ada di halaman.
+      if (typeof document !== 'undefined') {
+        const canvas = document.getElementById('minimap');
+        if (canvas) {
+          const focus = (input && input.minimapFocus) || null;
+          renderMinimap(canvas, world, focus);
+        }
       }
-      return this;
     },
   };
-
   return world;
 }
 
-// Re-ekspor util yang sering dipakai Gameplay dari satu pintu.
-export { WORLD_HALF, ROAD_SPACING, DISTRICTS, LANDMARKS, MISSION_POINTS, PLAYER_SPAWN };
-export { resolveCircleFn as resolveCircle, isWalkableFn as isWalkable };
-export { getMinimapData } from './minimap.js';
-export { buildVehicleMesh, vehicleSpec } from './vehicles.js';
-export { updateCamera, snapCamera } from './camera.js';
+// Utilitas dunia untuk gameplay (lewat objek world, tanpa import silang):
+// - worldPosOf(vehicle): posisi mesh saat ini
+// - nearestVehicle(world, x, z, maxDist): mobil parkir terdekat
+// - districtAtPoint(world, x, z): nama distrik dari config
+export function worldPosOf(vehicle) {
+  if (!vehicle) return null;
+  if (vehicle.mesh && vehicle.mesh.position) {
+    return { x: vehicle.mesh.position.x, z: vehicle.mesh.position.z };
+  }
+  return { x: vehicle.x || 0, z: vehicle.z || 0 };
+}
+
+export function nearestVehicle(world, x, z, maxDist = 4) {
+  let best = null;
+  let bestD = maxDist;
+  for (const v of world.vehicles || []) {
+    const d = Math.hypot(v.x - x, v.z - z);
+    if (d < bestD) {
+      bestD = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+export function districtAtPoint(world, x, z) {
+  const districts = (world.config && world.config.DISTRICTS) || [];
+  for (const d of districts) {
+    if (x >= d.x0 && x <= d.x1 && z >= d.z0 && z <= d.z1) return d.name;
+  }
+  return 'Arunika Bay';
+}

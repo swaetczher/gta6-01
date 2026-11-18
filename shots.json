@@ -1,6 +1,29 @@
-[
-  { "name": "1-cover-chase.jpg", "query": "?shot=cover&seed=1" },
-  { "name": "2-foot-lentera.jpg", "query": "?shot=foot&seed=1" },
-  { "name": "3-heist.jpg", "query": "?shot=heist&seed=1" },
-  { "name": "4-vista.jpg", "query": "?shot=vista&seed=1" }
-]
+{
+  "comment": "4 screenshot ARUNIKA BAY. Tiap entri: file hasil, mode ?shot= di game/index.html, dan seed deterministik. File pertama menurut nama adalah cover.",
+  "shots": [
+    {
+      "file": "1-cover-chase.jpg",
+      "mode": "cover",
+      "seed": 1,
+      "url": "game/index.html?shot=cover&seed=1"
+    },
+    {
+      "file": "2-foot-lentera.jpg",
+      "mode": "foot",
+      "seed": 1,
+      "url": "game/index.html?shot=foot&seed=1"
+    },
+    {
+      "file": "3-heist.jpg",
+      "mode": "heist",
+      "seed": 1,
+      "url": "game/index.html?shot=heist&seed=1"
+    },
+    {
+      "file": "4-vista.jpg",
+      "mode": "vista",
+      "seed": 1,
+      "url": "game/index.html?shot=vista&seed=1"
+    }
+  ]
+}

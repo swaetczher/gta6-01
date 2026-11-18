@@ -1,113 +1,141 @@
-// save.js — Save/load ARUNIKA BAY via localStorage.
-// Menyimpan posisi, health, uang, senjata + ammo, progres misi, wanted.
-// Autosave dipanggil fasad tiap misi selesai. Aman bila storage diblokir
-// (mode privat): simpan di memori sebagai cadangan.
+// save.js — Simpan progres ARUNIKA BAY.
+//
+// Slot simpan tunggal di `localStorage` dengan kunci `SAVE_KEY`. Bila
+// `localStorage` tidak tersedia (mode privat, Node, atau diblokir), modul
+// jatuh ke memori biasa — game tetap bisa simpan/muat dalam satu sesi,
+// hanya tidak bertahan antar sesi. Kegagalan tulis tidak pernah melempar:
+// `save()` mengembalikan false dan game lanjut jalan.
+
 export const SAVE_KEY = 'arunika-bay-save-v1';
 
-let memoryFallback = null;
+// Versi format save; naikkan bila struktur data berubah.
+export const SAVE_VERSION = 1;
 
-function storage() {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    return localStorage;
-  } catch {
-    return null;
-  }
+/** Apakah sebuah nilai bisa dipakai sebagai store (punya get/set/remove). */
+function isUsableStore(store) {
+  return (
+    store &&
+    typeof store.getItem === 'function' &&
+    typeof store.setItem === 'function' &&
+    typeof store.removeItem === 'function'
+  );
 }
 
-export function serializeGame(state) {
+/** Store memori pengganti localStorage (satu slot, hidup selama sesi). */
+function createMemoryStore() {
+  let slot = null;
   return {
-    version: 1,
-    savedAt: new Date().toISOString(),
-    player: {
-      x: state.player.x,
-      z: state.player.z,
-      heading: state.player.heading,
-      health: state.player.health,
-      money: state.player.money,
-      weapon: state.combat.weapon,
-      ammo: state.combat.ammo,
-      ammoReserve: state.combat.ammoReserve,
+    getItem() {
+      return slot;
     },
-    missions: { completed: [...state.missions.completed] },
-    wanted: { heat: state.wanted.heat },
+    setItem(_key, value) {
+      slot = String(value);
+    },
+    removeItem() {
+      slot = null;
+    },
   };
 }
 
-export function saveGame(state) {
-  const data = serializeGame(state);
-  const json = JSON.stringify(data);
-  const store = storage();
-  if (store) {
-    try {
-      store.setItem(SAVE_KEY, json);
-    } catch {
-      memoryFallback = json;
-    }
-  } else {
-    memoryFallback = json;
-  }
-  return data;
-}
-
-export function loadGame() {
-  const store = storage();
-  let json = null;
-  if (store) {
-    try {
-      json = store.getItem(SAVE_KEY);
-    } catch {
-      json = null;
-    }
-  }
-  if (!json) json = memoryFallback;
-  if (!json) return null;
+/**
+ * Ambil store yang akan dipakai: `localStorage` bila ada dan bisa ditulis,
+ * memori bila tidak. Tes Node memakai memori secara otomatis.
+ */
+export function resolveStore() {
   try {
-    const data = JSON.parse(json);
-    if (!data || data.version !== 1 || !data.player) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-export function clearSave() {
-  memoryFallback = null;
-  const store = storage();
-  if (store) {
-    try {
-      store.removeItem(SAVE_KEY);
-    } catch {
-      // abaikan: storage tidak tersedia
+    if (typeof localStorage !== 'undefined' && isUsableStore(localStorage)) {
+      const probe = '__arunika_probe__';
+      localStorage.setItem(probe, '1');
+      localStorage.removeItem(probe);
+      return localStorage;
     }
+  } catch (_err) {
+    // localStorage ada tapi diblokir — jatuh ke memori di bawah.
   }
+  return createMemoryStore();
 }
 
-export function applySave(state, data) {
-  if (!data) return false;
-  state.player.x = data.player.x;
-  state.player.z = data.player.z;
-  state.player.heading = data.player.heading || 0;
-  state.player.health = data.player.health;
-  state.player.money = data.player.money;
-  state.player.inCar = null;
-  state.combat.weapon = data.player.weapon || 'fists';
-  state.combat.ammo = data.player.ammo ?? 12;
-  state.combat.ammoReserve = data.player.ammoReserve ?? 48;
-  state.missions.completed = [...(data.missions.completed || [])];
-  state.wanted.heat = data.wanted ? data.wanted.heat || 0 : 0;
-  state.wanted.stars = 0;
-  return true;
-}
+/**
+ * Manajer save game.
+ *
+ * @param {object} [store] store kustom (dipakai tes); bila tidak diisi,
+ *   `resolveStore()` memilih localStorage atau memori
+ */
+export function createSave(store) {
+  const backend = isUsableStore(store) ? store : resolveStore();
 
-export function hasSave() {
-  return loadGame() !== null;
-}
-// --- akhir save.js (baris revisi ditambahkan lewat edit terpisah) ---
-// Revisi terekam: wanted sengaja di-reset ke 0 saat load (bintang
-// dihitung ulang dari heat yang tersimpan) — pemain tidak langsung
-// dikepung polisi begitu save dibuka kembali.
-export function saveSummary(data) {
-  if (!data) return 'Belum ada save.';
-  return `Save ${data.savedAt}: misi selesai ${data.missions.completed.length}/5, uang $${data.player.money}.`;
+  const api = {
+    /** Kunci slot simpan. */
+    key: SAVE_KEY,
+
+    /** Apakah ada save yang tersimpan. */
+    hasSave() {
+      try {
+        return backend.getItem(SAVE_KEY) !== null;
+      } catch (_err) {
+        return false;
+      }
+    },
+
+    /**
+     * Simpan data game. `data` harus bisa di-JSON-kan.
+     * @returns {boolean} true bila tersimpan
+     */
+    save(data) {
+      try {
+        const payload = JSON.stringify({
+          version: SAVE_VERSION,
+          savedAt: Date.now(),
+          data: data || {},
+        });
+        backend.setItem(SAVE_KEY, payload);
+        return true;
+      } catch (_err) {
+        return false;
+      }
+    },
+
+    /**
+     * Muat data game.
+     * @returns {object|null} `data` yang disimpan, atau null bila tidak ada/rusak
+     */
+    load() {
+      try {
+        const raw = backend.getItem(SAVE_KEY);
+        if (raw === null || raw === undefined) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (parsed.version !== SAVE_VERSION) return null;
+        return parsed.data && typeof parsed.data === 'object' ? parsed.data : null;
+      } catch (_err) {
+        return null;
+      }
+    },
+
+    /** Hapus slot simpan. */
+    clear() {
+      try {
+        backend.removeItem(SAVE_KEY);
+        return true;
+      } catch (_err) {
+        return false;
+      }
+    },
+
+    /**
+     * Rangkum satu save penuh dari potongan-potongan game: pemain, misi,
+     * wanted, combat, dan uang. Dipakai autosave di gameplay/index.js.
+     */
+    collect(parts) {
+      const p = parts || {};
+      return {
+        money: typeof p.money === 'number' ? p.money : 0,
+        player: p.player || null,
+        missions: p.missions || null,
+        wanted: p.wanted || null,
+        combat: p.combat || null,
+      };
+    },
+  };
+  return api;
 }

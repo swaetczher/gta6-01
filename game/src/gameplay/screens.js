@@ -1,123 +1,159 @@
-// screens.js — Layar ARUNIKA BAY: start / playing / paused / busted / complete.
-// State layar murni di sini; manipulasi DOM dijaga (tanpa DOM = no-op)
-// supaya logika bisa diuji di node. main.js yang mengikat tombol.
+// screens.js — Layar menu ARUNIKA BAY.
+//
+// Lima layar, satu aktif dalam satu waktu:
+//   start    — menu judul ("ARUNIKA BAY") + tombol #start-button.
+//   playing  — game berjalan, HUD tampil.
+//   paused   — jeda (Esc/P), menu jeda tampil.
+//   busted   — Bara tertangkap / nyawa habis.
+//   complete — semua misi selesai, spanduk fajar terbit.
+//
+// Modul ini mengatur `display` elemen #menu-screen dan turunannya lewat
+// atribut `data-screen`, plus mengikat tombol mulai. Semua akses DOM
+// dijaga (elemen tak ada = dilewati), supaya tetap jalan di tes Node.
+
 export const SCREENS = ['start', 'playing', 'paused', 'busted', 'complete'];
 
-export function createScreenState() {
-  return { current: 'start', previous: null, bustedFine: 100 };
+export const SCREEN_START = 'start';
+export const SCREEN_PLAYING = 'playing';
+export const SCREEN_PAUSED = 'paused';
+export const SCREEN_BUSTED = 'busted';
+export const SCREEN_COMPLETE = 'complete';
+
+/** Apakah `name` salah satu layar yang sah. */
+export function isScreen(name) {
+  return SCREENS.includes(name);
 }
 
-export function setScreen(screens, name) {
-  if (!SCREENS.includes(name)) return false;
-  screens.previous = screens.current;
-  screens.current = name;
-  applyScreenDom(name);
-  return true;
-}
+/** Judul yang tampil di menu untuk tiap layar akhir. */
+export const SCREEN_TITLES = {
+  [SCREEN_START]: 'ARUNIKA BAY',
+  [SCREEN_PLAYING]: '',
+  [SCREEN_PAUSED]: 'JEDA',
+  [SCREEN_BUSTED]: 'TERTANGKAP!',
+  [SCREEN_COMPLETE]: 'FAJAR TERBIT — ARUNIKA BAY',
+};
 
-export function isPlaying(screens) {
-  return screens.current === 'playing';
-}
+/** Pesan layar akhir. */
+export const SCREEN_MESSAGES = {
+  [SCREEN_BUSTED]:
+    'Bara Kelana tertangkap polisi Ombak Hitam. Arunika Bay masih menunggu fajarnya.',
+  [SCREEN_COMPLETE]: 'Semua misi selesai — Arunika Bay bebas!',
+};
 
-export function pauseGame(screens) {
-  if (screens.current === 'playing') return setScreen(screens, 'paused');
-  return false;
-}
+/**
+ * Manajer layar.
+ *
+ * @param {object} [opts]
+ * @param {object} [opts.doc] dokumen DOM (default: `document` global bila ada)
+ * @param {()=>void} [opts.onStart] dipanggil saat tombol mulai ditekan
+ * @param {()=>void} [opts.onResume] dipanggil saat lanjut dari jeda
+ * @param {()=>void} [opts.onRestart] dipanggil saat main lagi dari layar akhir
+ */
+export function createScreens(opts = {}) {
+  const doc = opts.doc || (typeof document !== 'undefined' ? document : null);
+  const onStart = typeof opts.onStart === 'function' ? opts.onStart : null;
+  const onResume = typeof opts.onResume === 'function' ? opts.onResume : null;
+  const onRestart = typeof opts.onRestart === 'function' ? opts.onRestart : null;
 
-export function resumeGame(screens) {
-  if (screens.current === 'paused') return setScreen(screens, 'playing');
-  return false;
-}
+  let screen = SCREEN_START;
+  let bound = false;
 
-// Pesan sementara (toast) — disimpan di state, dirender hud.js.
-export function createToasts() {
-  return [];
-}
-
-export function pushToast(toasts, text, seconds) {
-  toasts.push({ text, ttl: seconds || 3 });
-  if (toasts.length > 4) toasts.shift();
-  return toasts;
-}
-
-export function updateToasts(toasts, dt) {
-  for (let i = toasts.length - 1; i >= 0; i--) {
-    toasts[i].ttl -= dt;
-    if (toasts[i].ttl <= 0) toasts.splice(i, 1);
+  function get(id) {
+    try {
+      if (!doc || typeof doc.getElementById !== 'function') return null;
+      return doc.getElementById(id);
+    } catch (_err) {
+      return null;
+    }
   }
-  return toasts;
-}
 
-function applyScreenDom(name) {
-  if (typeof document === 'undefined') return;
-  // Bila index.html sudah menyediakan #menu-screen + #start-button,
-  // pakai itu (jangan buat overlay kedua yang menutupi menu halaman).
-  const menu = document.getElementById('menu-screen');
-  if (menu) {
-    const title = menu.querySelector('h2');
-    const para = menu.querySelector('p');
-    const btn = document.getElementById('start-button');
-    const note = document.getElementById('menu-save-note');
-    if (name === 'playing') {
-      menu.classList.remove('active');
-      return;
+  function applyVisibility() {
+    const menu = get('menu-screen');
+    if (menu) {
+      try {
+        menu.style.display = screen === SCREEN_PLAYING ? 'none' : '';
+        menu.setAttribute('data-screen', screen);
+      } catch (_err) {
+        // Elemen palsu di tes — abaikan.
+      }
     }
-    const bodies = {
-      start: ['ARUNIKA BAY', 'Bara Kelana kembali ke kota fajar untuk membebaskan adiknya dari sindikat Ombak Hitam. Lima pekerjaan, satu malam, sebelum matahari terbit.', 'MULAI — KURIR FAJAR'],
-      paused: ['JEDA', 'Tekan P untuk lanjut.', 'LANJUT'],
-      busted: ['TERTANGKAP!', 'Polisi Pelabuhan menangkap Bara. Denda $100 — kau dibebaskan di depan Rumah Sakit Arunika. Tekan Enter untuk lanjut.', 'LANJUT'],
-      complete: ['FAJAR TERBIT', 'Sinta bebas. Rangga Samudra jatuh. Arunika Bay bernapas lagi. Terima kasih sudah bermain. Tekan Enter untuk main lagi.', 'MAIN LAGI'],
-    };
-    const body = bodies[name];
-    if (body) {
-      if (title) title.textContent = body[0];
-      if (para) para.textContent = body[1];
-      if (btn) btn.textContent = body[2];
-      if (note) note.textContent = '';
+    const title = get('menu-title');
+    if (title) {
+      try {
+        title.textContent = SCREEN_TITLES[screen] || '';
+      } catch (_err) {
+        // Abaikan.
+      }
     }
-    menu.classList.add('active');
-    if (btn && !btn._arunikaWired) {
-      btn._arunikaWired = true;
-      btn.addEventListener('click', () => {
-        document.dispatchEvent(new CustomEvent('arunika-start'));
+    const message = get('menu-message');
+    if (message) {
+      try {
+        message.textContent = SCREEN_MESSAGES[screen] || '';
+      } catch (_err) {
+        // Abaikan.
+      }
+    }
+  }
+
+  const api = {
+    /** Layar aktif saat ini. */
+    get screen() {
+      return screen;
+    },
+    /** Apakah game sedang dimainkan (bukan menu/jeda/akhir). */
+    get isPlaying() {
+      return screen === SCREEN_PLAYING;
+    },
+
+    /** Pindah ke layar lain (nama tak sah diabaikan). */
+    setScreen(name) {
+      if (!isScreen(name)) return screen;
+      if (name === screen) return screen;
+      screen = name;
+      applyVisibility();
+      return screen;
+    },
+
+    /** Mulai bermain dari menu awal. */
+    start() {
+      if (onStart) onStart();
+      return this.setScreen(SCREEN_PLAYING);
+    },
+
+    /** Lanjut bermain dari jeda. */
+    resume() {
+      if (onResume) onResume();
+      return this.setScreen(SCREEN_PLAYING);
+    },
+
+    /** Main lagi dari layar busted/complete. */
+    restart() {
+      if (onRestart) onRestart();
+      return this.setScreen(SCREEN_PLAYING);
+    },
+
+    /** Jeda bila sedang bermain; lanjut bila sedang jeda. */
+    togglePause() {
+      if (screen === SCREEN_PLAYING) return this.setScreen(SCREEN_PAUSED);
+      if (screen === SCREEN_PAUSED) return this.resume();
+      return screen;
+    },
+
+    /**
+     * Ikat tombol #start-button (klik -> mulai). Aman dipanggil berulang:
+     * pengikatan kedua diabaikan.
+     */
+    bind() {
+      if (bound) return false;
+      const button = get('start-button');
+      if (!button || typeof button.addEventListener !== 'function') return false;
+      button.addEventListener('click', () => {
+        this.start();
       });
-    }
-    return;
-  }
-  let overlay = document.getElementById('screen-arunika');
-  if (!overlay) {
-    overlay = document.createElement('div');
-    overlay.id = 'screen-arunika';
-    overlay.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(8,12,20,.78);color:#fff;z-index:20;text-align:center;font-family:system-ui,sans-serif;';
-    document.body.appendChild(overlay);
-  }
-  if (name === 'playing') {
-    overlay.style.display = 'none';
-    return;
-  }
-  overlay.style.display = 'flex';
-  const bodies = {
-    start: '<h1 style="font-size:52px;margin:0;color:#ffd94a;letter-spacing:4px;">ARUNIKA BAY</h1>'
-      + '<p style="font-size:17px;max-width:560px;line-height:1.6;">Fajar di kota pelabuhan. Bara Kelana kembali untuk membebaskan adiknya, Sinta, dari sindikat Ombak Hitam.<br>WASD jalan &middot; Shift lari &middot; Spasi lompat &middot; E masuk/curi mobil (tahan) &middot; F tinju &middot; Klik tembak &middot; R isi ulang &middot; 1/2 senjata &middot; Enter misi &middot; P jeda</p>'
-      + '<p style="font-size:15px;color:#ffe9a8;">Klik tombol di bawah, lalu klik layar untuk mengunci mouse.</p>'
-      + '<button id="btn-start-arunika" style="font-size:20px;padding:12px 34px;border-radius:10px;border:0;background:#ffd94a;color:#222;font-weight:800;cursor:pointer;">MAIN</button>',
-    paused: '<h1 style="font-size:40px;margin:0;">JEDA</h1><p>Tekan P untuk lanjut.</p>',
-    busted: '<h1 style="font-size:44px;margin:0;color:#e5484d;">TERTANGKAP!</h1><p>Polisi Pelabuhan menangkap Bara. Denda $100 — kau dibebaskan di depan Rumah Sakit Arunika.</p><p>Tekan Enter untuk lanjut.</p>',
-    complete: '<h1 style="font-size:44px;margin:0;color:#ffd94a;">FAJAR TERBIT</h1><p>Sinta bebas. Rangga Samudra jatuh. Arunika Bay bernapas lagi.<br>Terima kasih sudah bermain.</p><p>Tekan Enter untuk main lagi.</p>',
+      bound = true;
+      return true;
+    },
   };
-  overlay.innerHTML = bodies[name] || '';
-  const btn = document.getElementById('btn-start-arunika');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      const ev = new CustomEvent('arunika-start');
-      document.dispatchEvent(ev);
-    });
-  }
-}
-// --- akhir screens.js (baris revisi ditambahkan lewat edit terpisah) ---
-// Revisi terekam: layar start menampilkan SEMUA kontrol di satu tempat
-// supaya juri yang hanya melihat screenshot start tetap membaca
-// kelengkapan game (jalan, curi mobil, tembak, misi, jeda).
-export function startScreenHint() {
-  return 'WASD jalan, Shift lari, E curi mobil, F tinju, klik tembak, Enter misi';
+  applyVisibility();
+  return api;
 }

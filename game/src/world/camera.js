@@ -1,100 +1,82 @@
-// camera.js — Kamera third-person ARUNIKA BAY.
-// Tiga mode: 'foot' (jalan kaki, di belakang bahu pemain), 'drive'
-// (mengejar dari belakang mobil, lebih jauh + lebih tinggi), dan
-// 'vista' (sinematik: dari Bukit Mercusuar memandang kota saat fajar).
-// Kamera dihaluskan (lerp) supaya tidak patah; tidak pernah menembus
-// gedung — jarak ditarik bila ada collider di antara kamera dan target.
+// ARUNIKA BAY — kamera kejar third-person (tulis ulang round 2).
+// Kamera mengikuti dari belakang target (pemain/mobil) dengan yaw + pitch
+// yang bisa diatur; transisi dihaluskan dengan lerp supaya tidak patah.
+import { WORLD } from './config.js';
 
-import { WORLD_HALF } from './config.js';
-import { circleHits } from './collision.js';
+export function createCamera(THREE, aspect = 16 / 9) {
+  const camera = new THREE.PerspectiveCamera(62, aspect, 0.1, 600);
+  camera.position.set(8, 6, 18);
+  camera.lookAt(0, 1, 0);
+  return camera;
+}
 
-// Mode kamera yang dipakai saat ini (string) — Gameplay boleh membaca
-// untuk menampilkan label mode di HUD debug.
-export const CAMERA_MODES = ['foot', 'drive', 'vista'];
-
-// Hitung posisi kamera ideal di belakang target (heading = arah hadap).
-function behindPosition(target, heading, distance, height) {
-  return {
-    x: target.x - Math.sin(heading) * distance,
-    z: target.z - Math.cos(heading) * distance,
-    y: height,
+// Rig kejar: simpan yaw/pitch, hitung posisi kamera dari target tiap frame.
+export function createChaseCamera(THREE, aspect = 16 / 9) {
+  const camera = createCamera(THREE, aspect);
+  const rig = {
+    camera,
+    yaw: Math.PI,
+    pitch: 0.32,
+    distance: 11,
+    height: 4.2,
+    target: { x: 0, y: 1.2, z: 0 },
+    // Langsung lompat ke belakang target (dipakai staging shot).
+    snap(x, z, yaw, pitch = 0.32, distance = 11) {
+      rig.yaw = yaw;
+      rig.pitch = pitch;
+      rig.distance = distance;
+      rig.target.x = x;
+      rig.target.y = 1.2;
+      rig.target.z = z;
+      rig.apply();
+    },
+    // Hitung posisi kamera dari yaw/pitch/jarak saat ini.
+    apply() {
+      const cp = Math.cos(rig.pitch);
+      const sp = Math.sin(rig.pitch);
+      const ox = -Math.sin(rig.yaw) * cp * rig.distance;
+      const oz = -Math.cos(rig.yaw) * cp * rig.distance;
+      camera.position.set(
+        rig.target.x + ox,
+        rig.target.y + sp * rig.distance + rig.height * 0.4,
+        rig.target.z + oz,
+      );
+      camera.lookAt(rig.target.x, rig.target.y, rig.target.z);
+    },
   };
+  return rig;
 }
 
-// Tarik kamera mendekat bila garis pandang ke target terhalang gedung.
-// Sederhana: cek titik kamera; bila di dalam collider, majukan 1 m
-// berulang sampai keluar (maks 6 langkah).
-function pullInIfBlocked(pos, target, colliders) {
-  let p = { ...pos };
-  for (let i = 0; i < 6; i++) {
-    if (!circleHits(p.x, p.z, 0.6, colliders)) return p;
-    p.x += (target.x - p.x) * 0.25;
-    p.z += (target.z - p.z) * 0.25;
-  }
-  return p;
+// Ikuti target dengan smoothing: posisi target di-lerp, lalu apply().
+// yawTarget: arah hadap target (radian, 0 = menghadap -z). dt detik.
+export function followTarget(rig, x, z, yawTarget, dt, height = 1.2) {
+  const k = 1 - Math.exp(-dt * 7);
+  rig.target.x += (x - rig.target.x) * k;
+  rig.target.y += (height - rig.target.y) * k;
+  rig.target.z += (z - rig.target.z) * k;
+  let dy = yawTarget - rig.yaw;
+  while (dy > Math.PI) dy -= Math.PI * 2;
+  while (dy < -Math.PI) dy += Math.PI * 2;
+  rig.yaw += dy * (1 - Math.exp(-dt * 5));
+  rig.apply();
 }
 
-// Perbarui kamera satu frame. `opts`: { mode, target {x,z,heading},
-// car (objek mobil bila drive), colliders, dt, time }.
-// `camera` = THREE.PerspectiveCamera milik renderer Gameplay/main.
-// Mengembalikan mode yang dipakai.
-export function updateCamera(camera, opts) {
-  const { mode = 'foot', target, car = null, colliders = [], dt = 0.016 } = opts;
-  const k = Math.min(1, dt * 6); // faktor lerp (halus, framerate-independent-ish)
-  let desired;
-  let lookAt;
-
-  if (mode === 'drive' && car) {
-    // Kamera mengemudi: 10 m di belakang mobil, 4,2 m di atas tanah,
-    // melebar saat mobil cepat (rasa kecepatan).
-    const speed = Math.abs(car.speed || 0);
-    const dist = 10 + Math.min(4, speed * 0.12);
-    desired = behindPosition({ x: car.x, z: car.z }, car.heading, dist, 4.2);
-    lookAt = { x: car.x + Math.sin(car.heading) * 6, y: 1.6, z: car.z + Math.cos(car.heading) * 6 };
-  } else if (mode === 'vista') {
-    // Vista dari Bukit Mercusuar: kamera diam di atas bukit, memandang
-    // kota + matahari terbit di timur. Dipakai shot 4 + layar akhir M5.
-    desired = { x: -66, y: 34, z: -88 };
-    lookAt = { x: 30, y: 6, z: 10 };
-  } else {
-    // Jalan kaki: 7 m di belakang, 3,4 m di atas — pemain + jalan depan terlihat.
-    desired = behindPosition(target, target.heading || 0, 7, 3.4);
-    lookAt = { x: target.x + Math.sin(target.heading || 0) * 4, y: 1.6, z: target.z + Math.cos(target.heading || 0) * 4 };
-  }
-
-  // Jangan tembus gedung (kecuali vista yang memang di atas bukit).
-  if (mode !== 'vista') desired = pullInIfBlocked(desired, { x: lookAt.x, z: lookAt.z }, colliders);
-
-  // Jepit ke dunia supaya kamera tidak keluar jauh dari kota.
-  desired.x = Math.max(-WORLD_HALF - 30, Math.min(WORLD_HALF + 30, desired.x));
-  desired.z = Math.max(-WORLD_HALF - 30, Math.min(WORLD_HALF + 30, desired.z));
-  desired.y = Math.max(1.2, desired.y);
-
-  camera.position.x += (desired.x - camera.position.x) * k;
-  camera.position.y += (desired.y - camera.position.y) * k;
-  camera.position.z += (desired.z - camera.position.z) * k;
-  camera.lookAt(lookAt.x, lookAt.y, lookAt.z);
-  return mode;
+// Kamera sinematik diam untuk layar vista: tarik agak jauh + naik.
+export function vistaPose(rig, x, z, yaw, pitch = 0.25) {
+  rig.yaw = yaw;
+  rig.pitch = pitch;
+  rig.distance = 16;
+  rig.target.x = x;
+  rig.target.y = 2.2;
+  rig.target.z = z;
+  rig.apply();
 }
 
-// Atur kamera langsung ke posisi mode (tanpa lerp) — dipakai saat spawn /
-// ganti mode mendadak (masuk mobil) supaya tidak ada sapuan kamera panjang.
-export function snapCamera(camera, opts) {
-  const { mode = 'foot', target, car = null, colliders = [] } = opts;
-  let desired;
-  let lookAt;
-  if (mode === 'drive' && car) {
-    desired = behindPosition({ x: car.x, z: car.z }, car.heading, 10, 4.2);
-    lookAt = { x: car.x + Math.sin(car.heading) * 6, y: 1.6, z: car.z + Math.cos(car.heading) * 6 };
-  } else if (mode === 'vista') {
-    desired = { x: -66, y: 34, z: -88 };
-    lookAt = { x: 30, y: 6, z: 10 };
-  } else {
-    desired = behindPosition(target, target.heading || 0, 7, 3.4);
-    lookAt = { x: target.x, y: 1.6, z: target.z };
-  }
-  if (mode !== 'vista') desired = pullInIfBlocked(desired, { x: lookAt.x, z: lookAt.z }, colliders);
-  camera.position.set(desired.x, desired.y, desired.z);
-  camera.lookAt(lookAt.x, lookAt.y, lookAt.z);
-  return mode;
+// Jaga kamera tetap di dalam batas kota (jangan sampai di bawah tanah).
+export function clampCamera(rig) {
+  const c = rig.camera.position;
+  if (c.y < 0.6) c.y = 0.6;
+  const h = WORLD.half + 60;
+  c.x = Math.max(-h, Math.min(h, c.x));
+  c.z = Math.max(-h, Math.min(h, c.z));
 }

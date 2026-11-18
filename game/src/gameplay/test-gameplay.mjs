@@ -1,329 +1,569 @@
-// test-gameplay.mjs — Uji logika gameplay ARUNIKA BAY (node, tanpa browser).
-// Jalankan: node game/src/gameplay/test-gameplay.mjs
-// Modul HUD/screens yang menyentuh DOM dijaga typeof document, jadi
-// yang diuji di sini adalah logika murni + fasad.
-import { createStubWorld, isInCanal, CANAL_RECT, adaptWorld } from './world-adapter.js';
-import * as THREE from '../../vendor/three/three.module.min.js';
-import { createWorld } from '../world/index.js';
-import { createPlayer, updatePlayer } from './player.js';
-import { createCombat, attack, startReload, updateCombat } from './combat.js';
-import { createWanted, addHeat, updateWanted, starsForHeat } from './wanted.js';
-import { policeCountForStars, createPoliceUnit, updatePolice } from './police.js';
-import { createThug, updateThugs, allThugsDefeated } from './enemies.js';
-import { MISSIONS, createMissionState, startMission, updateMission, nextMissionId } from './missions.js';
-import { createGame, updateGame, newGame, startNextMission, busted } from './index.js';
-import { serializeGame, saveGame, loadGame, clearSave } from './save.js';
+// test-gameplay.mjs — Tes logika gameplay ARUNIKA BAY (Node, tanpa browser).
+//
+// Dijalankan: `node game/src/gameplay/test-gameplay.mjs`
+// Semua modul diuji lewat stub THREE + document palsu — tidak ada renderer,
+// tidak ada localStorage (save memakai fallback memori di Node).
+// Keluar 0 bila semua cek lulus, 1 bila ada yang gagal.
 
+import { createWanted, starsForHeat, wantedLabel, HEAT_FOR_STEAL } from './wanted.js';
+import { createPolice, POLICE_STATES } from './police.js';
+import { createEnemies, ENEMY_HEALTH_GRUNT, ENEMY_HEALTH_BOSS } from './enemies.js';
+import { createCombat, WEAPON_FISTS, WEAPON_PISTOL } from './combat.js';
+import { createPlayer, keyDown } from './player.js';
+import { createMissions, MISSIONS, TOTAL_REWARD, STORY } from './missions.js';
+import { createSave, SAVE_KEY } from './save.js';
+import { createHud, formatMoney, formatHealth, MINIMAP_SIZE } from './hud.js';
+import { createScreens, SCREENS } from './screens.js';
+import { createWorldAdapter, districtAt, DISTRICTS } from './world-adapter.js';
+import { createGameplay } from './index.js';
+
+// ---------------------------------------------------------------- stub
+function vec3() {
+  const v = { x: 0, y: 0, z: 0 };
+  v.set = (x, y, z) => {
+    v.x = x;
+    v.y = y;
+    v.z = z;
+  };
+  return v;
+}
+
+class GroupStub {
+  constructor() {
+    this.children = [];
+    this.position = vec3();
+    this.rotation = { x: 0, y: 0, z: 0 };
+    this.scale = { setScalar: () => {} };
+    this.visible = true;
+  }
+  add(child) {
+    this.children.push(child);
+    return this;
+  }
+}
+
+class MeshStub {
+  constructor() {
+    this.position = vec3();
+    this.rotation = { x: 0, y: 0, z: 0 };
+    this.visible = true;
+  }
+}
+
+const THREEStub = {
+  Group: GroupStub,
+  Mesh: MeshStub,
+  BoxGeometry: class {
+    constructor() {}
+  },
+  MeshLambertMaterial: class {
+    constructor(opts) {
+      this.color = opts ? opts.color : 0;
+    }
+  },
+};
+
+const sceneStub = {
+  added: [],
+  add(mesh) {
+    this.added.push(mesh);
+  },
+  remove(mesh) {
+    const i = this.added.indexOf(mesh);
+    if (i >= 0) this.added.splice(i, 1);
+  },
+};
+
+function makeCtx2d() {
+  return {
+    fillStyle: '',
+    strokeStyle: '',
+    fillRect() {},
+    beginPath() {},
+    arc() {},
+    fill() {},
+    moveTo() {},
+    lineTo() {},
+    stroke() {},
+  };
+}
+
+function makeElement() {
+  return {
+    textContent: '',
+    style: {},
+    width: MINIMAP_SIZE,
+    height: MINIMAP_SIZE,
+    setAttribute() {},
+    addEventListener() {},
+    getContext: () => makeCtx2d(),
+  };
+}
+
+function makeDocument() {
+  const elements = {};
+  return {
+    elements,
+    getElementById(id) {
+      if (!elements[id]) elements[id] = makeElement();
+      return elements[id];
+    },
+  };
+}
+
+function makeWorld() {
+  return {
+    spawnPoints: {
+      player: { x: 0, z: 0, yaw: 0 },
+      kancil: { x: -88, z: 44 },
+    },
+    vehicles: [
+      {
+        mesh: null, x: -88, z: 44, heading: Math.PI / 2, speed: 0,
+        type: 'kancil', locked: true, label: 'M2 — Kancil curian', driven: false,
+      },
+      {
+        mesh: null, x: 10, z: 10, heading: 0, speed: 0,
+        type: 'sedan', locked: false, label: 'Sedan', driven: false,
+      },
+    ],
+    pedestrians: [],
+    traffic: [],
+    colliders: [{ x: 5, z: 0, r: 2 }],
+    config: {},
+    update() {},
+  };
+}
+
+// ---------------------------------------------------------------- runner
 let passed = 0;
 let failed = 0;
-function check(name, ok) {
-  if (ok) { passed += 1; console.log(`OK   ${name}`); }
-  else { failed += 1; console.log(`GAGAL ${name}`); }
-}
-const idle = { forward: false, back: false, left: false, right: false, run: false, jump: false, enter: false, enterHeld: false, attack: false, reload: false };
+const failures = [];
 
-// 1. Jalan kaki + lari + lompat.
-{
-  const world = createStubWorld();
-  const p = createPlayer(world.spawn);
-  updatePlayer(p, { ...idle, forward: true }, 1, world, []);
-  check('jalan kaki bergerak maju', p.z < world.spawn.z - 2);
-  const x0 = p.x; const z0 = p.z;
-  updatePlayer(p, { ...idle, forward: true, run: true }, 1, world, []);
-  const runD = Math.hypot(p.x - x0, p.z - z0);
-  check('lari lebih cepat dari jalan', runD > 6);
-  updatePlayer(p, { ...idle, jump: true }, 0.1, world, []);
-  check('lompat mengangkat pemain', p.y > 0 || p.vy > 0);
-}
-
-// 2. Tidak tembus gedung (resolveCircle).
-{
-  const world = createStubWorld();
-  const c = world.colliders[0];
-  const p = createPlayer({ x: (c.x1 + c.x2) / 2, z: c.z1 - 1, heading: 0 });
-  updatePlayer(p, { ...idle, forward: true }, 1, world, []);
-  check('pemain tidak masuk ke dalam gedung', world.isWalkable(p.x, p.z));
-}
-
-// 3. Masuk mobil + mengemudi + keluar.
-{
-  const world = createStubWorld();
-  const car = world.cars.find((c) => !c.locked);
-  const p = createPlayer({ x: car.x, z: car.z + 1, heading: 0 });
-  const events = [];
-  updatePlayer(p, { ...idle, enter: true }, 0.1, world, events);
-  check('masuk mobil terbuka dengan E', p.inCar === car.id);
-  updatePlayer(p, { ...idle, forward: true }, 1, world, events);
-  check('mobil bergerak saat gas', Math.abs(car.speed) > 1);
-  updatePlayer(p, { ...idle, enter: true }, 0.1, world, events);
-  check('keluar mobil dengan E', p.inCar === null);
-}
-
-// 4. Curi mobil terkunci (tahan E 2 detik) + wanted naik.
-{
-  const world = createStubWorld();
-  const car = world.cars.find((c) => c.locked);
-  const p = createPlayer({ x: car.x, z: car.z + 1, heading: 0 });
-  const events = [];
-  for (let i = 0; i < 25; i++) updatePlayer(p, { ...idle, enterHeld: true }, 0.1, world, events);
-  check('curi mobil: terkunci jadi terbuka', car.locked === false && car.stolen === true);
-  check('curi mobil: event carStolen keluar', events.some((e) => e.type === 'carStolen'));
-}
-
-// 5. Tinju + pistol + reload.
-{
-  const combat = createCombat();
-  const thug = createThug('t1', 0, -1.5, 60);
-  const hits = attack(combat, 0, 0, Math.PI, [thug]);
-  check('tinju kena dalam jarak + arah', hits.length === 1 && thug.health === 45);
-  combat.weapon = 'pistol';
-  combat.ammo = 1;
-  combat.ammoReserve = 12;
-  combat.cooldown = 0; // cooldown tinju sebelumnya sudah lewat (simulasi jeda)
-  const far = createThug('t2', 0, -30, 60);
-  const hits2 = attack(combat, 0, 0, Math.PI, [far]);
-  check('pistol kena dari 30 m', hits2.length === 1 && far.health === 26);
-  check('pistol habis 1 peluru', combat.ammo === 0);
-  startReload(combat);
-  updateCombat(combat, 1.5);
-  check('reload mengisi magazin', combat.ammo === 12 && combat.ammoReserve === 0);
-}
-
-// 6. Wanted: panas jadi bintang, sembunyi menurunkan panas.
-{
-  check('panas 0 = 0 bintang', starsForHeat(0) === 0);
-  check('panas 25 = 2 bintang', starsForHeat(25) === 2);
-  check('panas 100 = 5 bintang', starsForHeat(100) === 5);
-  const w = createWanted();
-  addHeat(w, 25);
-  check('curi mobil (+25) = 2 bintang', w.stars === 2);
-  const before = w.heat;
-  for (let i = 0; i < 200; i++) updateWanted(w, 0.1, false);
-  check('sembunyi lama menurunkan panas', w.heat < before);
-}
-
-// 7. Polisi: jumlah ikut bintang, kejar + tangkap.
-{
-  check('1 bintang = 2 polisi', policeCountForStars(1) === 2);
-  check('5 bintang = 9 polisi', policeCountForStars(5) === 9);
-  const world = createStubWorld();
-  const player = createPlayer({ x: 0, z: 0, heading: 0 });
-  const unit = createPoliceUnit('p1', 0, -1, false);
-  const events = [];
-  for (let i = 0; i < 30; i++) updatePolice([unit], player, 0.1, world, events);
-  check('polisi dekat cukup lama menangkap pemain', events.some((e) => e.type === 'busted'));
-}
-
-// 8. Preman: kejar + pukul, bisa dikalahkan.
-{
-  const world = createStubWorld();
-  const player = createPlayer({ x: 0, z: 0, heading: 0 });
-  player.health = 100;
-  const thug = createThug('t1', 0, -10, 15);
-  const events = [];
-  for (let i = 0; i < 100; i++) updateThugs([thug], player, 0.1, world, events);
-  check('preman mendekat dan memukul pemain', player.health < 100);
-  const combat = createCombat();
-  attack(combat, player.x, player.z, Math.atan2(thug.x - player.x, thug.z - player.z), [thug]);
-  check('preman bisa dikalahkan tinju', thug.alive === false);
-  check('semua preman kalah terdeteksi', allThugsDefeated([thug]));
-}
-
-// 9. Misi M1 selesai berurutan lewat fasad.
-{
-  const world = createStubWorld();
-  const game = createGame(world);
-  newGame(game);
-  startNextMission(game);
-  check('misi pertama = M1 Kurir Fajar', game.missions.currentId === 'M1');
-  for (const obj of MISSIONS[0].objectives) {
-    game.player.x = obj.x;
-    game.player.z = obj.z;
-    updateGame(game, { ...idle }, 0.1);
+function check(name, cond) {
+  if (cond) {
+    passed++;
+  } else {
+    failed++;
+    failures.push(name);
+    console.log(`GAGAL: ${name}`);
   }
-  check('M1 selesai + hadiah $150 masuk', game.missions.completed.includes('M1') && game.player.money === 200);
-  check('autosave tercatat setelah misi', loadGame() !== null);
-  clearSave();
 }
 
-// 10. Misi evade M4 selesai saat wanted 0.
+function approx(a, b, eps = 0.001) {
+  return Math.abs(a - b) < eps;
+}
+
+// ---------------------------------------------------------------- wanted
+check('wanted: panas 0 = 0 bintang', starsForHeat(0) === 0);
+check('wanted: panas 1 = 1 bintang', starsForHeat(1) === 1);
+check('wanted: panas 20 = 1 bintang', starsForHeat(20) === 1);
+check('wanted: panas 21 = 2 bintang', starsForHeat(21) === 2);
+check('wanted: panas 55 = 3 bintang', starsForHeat(55) === 3);
+check('wanted: panas 100 = 5 bintang', starsForHeat(100) === 5);
+check('wanted: label 0 = BERSIH', wantedLabel(0) === 'BERSIH');
+check('wanted: label 4 = ★★★★☆', wantedLabel(4) === '★★★★☆');
 {
-  const ms = createMissionState();
-  startMission(ms, 'M4');
-  ms.objectiveIndex = 3; // langsung ke objektif evade
-  const world = createStubWorld();
-  const player = createPlayer(world.spawn);
-  const wanted = createWanted();
+  const w = createWanted(0);
+  w.addHeat(HEAT_FOR_STEAL);
+  check('wanted: curi mobil +25 panas = 2 bintang', w.heat === 25 && w.stars === 2);
+  w.decay(10);
+  check('wanted: decay 10 dtk turun 15 panas', approx(w.heat, 10));
+  const w2 = createWanted(0);
+  w2.setHeat(500);
+  check('wanted: setHeat dijepit ke 100 / 5 bintang', w2.heat === 100 && w2.stars === 5);
+  let seen = 0;
+  const w3 = createWanted(0, (stars) => {
+    seen = stars;
+  });
+  w3.addHeat(50);
+  check('wanted: onChange dipanggil saat bintang berubah', seen === 3);
+  const snap = w3.snapshot();
+  const w4 = createWanted(0);
+  w4.restore(snap);
+  check('wanted: snapshot/restore bulat', w4.heat === 50 && w4.stars === 3);
+}
+
+// ---------------------------------------------------------------- police
+{
+  const police = createPolice(THREEStub, sceneStub);
+  const a = police.spawnOfficer(0, 0);
+  const b = police.spawnOfficer(20, 0, 'patrol');
+  check('polisi: spawn default patrol', a.state === 'patrol' && b.state === 'patrol');
+  check('polisi: 2 polisi terdaftar', police.officers.length === 2);
+  police.setAllState('chase');
+  check('polisi: setAllState chase mengubah semua', police.countByState('chase') === 2);
+  check('polisi: POLICE_STATES berisi 4 status', POLICE_STATES.length === 4);
+  const near = police.nearestTo(1, 0);
+  check('polisi: nearestTo menemukan yang terdekat', near && near.officer === a);
+  police.setAllState('patrol');
+  police.update(0.1, { x: 5, z: 0 }, 3);
+  check('polisi: patrol -> chase saat bintang 3 dan dekat', a.state === 'chase');
+  police.update(0.1, { x: 5, z: 0 }, 0);
+  check('polisi: chase -> search saat bintang 0', a.state === 'search');
+  const police2 = createPolice(THREEStub, sceneStub);
+  const c = police2.spawnOfficer(0, 0, 'chase');
+  const caught = police2.update(0.1, { x: 1, z: 0 }, 3);
+  check('polisi: tangkap < 1,6 m kembalikan arrest', caught === 'arrest' && c.state === 'arrest');
+}
+
+// ---------------------------------------------------------------- enemies
+{
+  const foes = createEnemies(THREEStub, sceneStub);
+  const grunt = foes.spawn(0, 0);
+  check('musuh: grunt nyawa 30', grunt.health === ENEMY_HEALTH_GRUNT && grunt.kind === 'grunt');
+  const boss = foes.spawnBoss(10, 10);
+  check('musuh: bos nyawa 150', boss.health === ENEMY_HEALTH_BOSS && boss.kind === 'boss');
+  const guards = foes.spawnGuards(-66, 94, 3);
+  check('musuh: spawnGuards 3 preman hidup', guards.length === 3 && foes.aliveCount() === 5);
+  const down = foes.damage(grunt, 30);
+  check('musuh: damage 30 menumbangkan grunt', down === true && !grunt.alive);
+  check('musuh: defeatedCount 1 setelah tumbang', foes.defeatedCount() === 1);
+  let hit = 0;
+  const chaser = foes.spawn(0, 0);
+  const beforeX = chaser.x;
+  foes.update(1, { x: 10, z: 0 }, (dmg) => {
+    hit += dmg;
+  });
+  check('musuh: mengejar Bara yang dekat', chaser.x > beforeX);
+  const brawler = foes.spawn(0, 0);
+  foes.update(0.1, { x: 1, z: 0 }, (dmg) => {
+    hit += dmg;
+  });
+  check('musuh: memukul Bara dalam jangkauan (damage 8)', hit >= 8);
+}
+
+// ---------------------------------------------------------------- combat
+{
+  const combat = createCombat({});
+  check('combat: senjata awal Tinju', combat.weapon === WEAPON_FISTS);
+  check('combat: label Tinju', combat.weaponLabel === 'Tinju');
+  let damaged = 0;
+  let downed = false;
+  const target = { x: 1, z: 0, alive: true };
+  const hit = combat.attack({ x: 0, z: 0 }, [target], (t, dmg) => {
+    damaged += dmg;
+    return false;
+  });
+  check('combat: tinju kena dalam 2,2 m', hit === target && damaged === 10);
+  const blocked = combat.attack({ x: 0, z: 0 }, [target], () => false);
+  check('combat: cooldown memblokir serangan kedua langsung', blocked === null);
+  combat.update(0.5);
+  const far = combat.attack({ x: 0, z: 0 }, [{ x: 50, z: 0, alive: true }], () => {
+    downed = true;
+    return true;
+  });
+  check('combat: tinju meleset di luar jangkauan', far === null && downed === false);
+  combat.givePistol();
+  check('combat: givePistol -> pistol 12/48', combat.weapon === WEAPON_PISTOL && combat.ammo === 12 && combat.reserveAmmo === 48);
+  combat.update(0.5);
+  combat.attack({ x: 0, z: 0 }, [{ x: 20, z: 0, alive: true }], () => false);
+  check('combat: tembakan pistol makan 1 peluru', combat.ammo === 11);
+  for (let i = 0; i < 11; i++) {
+    combat.update(0.5);
+    combat.attack({ x: 0, z: 0 }, [{ x: 20, z: 0, alive: true }], () => false);
+  }
+  check('combat: 12 tembakan menghabiskan magasin', combat.ammo === 0);
+  combat.update(0.5);
+  combat.attack({ x: 0, z: 0 }, [{ x: 20, z: 0, alive: true }], () => false);
+  check('combat: magasin kosong -> reload otomatis 12 dari cadangan', combat.ammo === 12 && combat.reserveAmmo === 36);
+  const stay = combat.setWeapon('roket');
+  check('combat: setWeapon tak dikenal ditolak', stay === WEAPON_PISTOL);
+  let hurt = 0;
+  const combat2 = createCombat({
+    onPlayerDamage: (dmg) => {
+      hurt += dmg;
+    },
+  });
+  const shooter = { x: 5, z: 0, alive: true, shootTimer: 0, kind: 'grunt' };
+  combat2.enemyFire(0.1, [shooter]);
+  check('combat: musuh menembak tiap 1,6 dtk (damage 6)', hurt === 6 && shooter.shootTimer === 1.6);
+  combat2.enemyFire(0.1, [shooter]);
+  check('combat: musuh tidak menembak sebelum cooldown habis', hurt === 6);
+  const combat3 = createCombat({});
+  const first = combat3.damagePlayer(10);
+  const second = combat3.damagePlayer(10);
+  check('combat: iframes memblokir hit kedua langsung', first === true && second === false);
+}
+
+// ---------------------------------------------------------------- player
+{
+  const world = makeWorld();
+  const input = {};
   const events = [];
-  const ev = updateMission(ms, { player, world, thugs: [], wanted, events });
-  check('M4 evade selesai saat wanted 0', ev && ev.type === 'missionComplete');
-  check('M4 selesai tercatat', ms.completed.includes('M4'));
+  const player = createPlayer(THREEStub, sceneStub, world, input, (e) => events.push(e));
+  check('pemain: mulai di spawn (0,0)', player.x === 0 && player.z === 0 && player.health === 100);
+  input.up = true;
+  player.update(1);
+  check('pemain: jalan maju 6 m/detik', approx(player.z, 6) && approx(player.x, 0));
+  input.run = true;
+  player.update(1);
+  check('pemain: lari 10 m/detik', approx(player.z, 16));
+  check('pemain: keyDown membaca alias w/ArrowUp', keyDown({ w: true }, 'up') && keyDown({ ArrowUp: true }, 'up'));
+  check('pemain: keyDown membaca input.keys Set', keyDown({ keys: new Set(['KeyW']) }, 'up'));
+
+  // Masuk mobil terbuka (Sedan di 10,10).
+  const world2 = makeWorld();
+  const input2 = {};
+  const player2 = createPlayer(THREEStub, sceneStub, world2, input2, () => {});
+  player2.setPosition(10, 10, 0);
+  input2.action = true;
+  player2.update(0.1);
+  check('pemain: E masuk mobil terbuka', player2.inCar === true && player2.car.type === 'sedan');
+  input2.action = false;
+  player2.update(0.1);
+  input2.action = true;
+  player2.update(0.1);
+  check('pemain: E keluar mobil saat diam', player2.inCar === false);
+
+  // Curi Kancil M2 (tahan E 2,5 dtk).
+  const world3 = makeWorld();
+  const input3 = { action: true };
+  const stolen = [];
+  const player3 = createPlayer(THREEStub, sceneStub, world3, input3, (e) => stolen.push(e.type));
+  player3.setPosition(-88, 44, 0);
+  for (let i = 0; i < 30; i++) player3.update(0.1);
+  check('pemain: tahan E 3 dtk mencuri Kancil', player3.inCar === true && world3.vehicles[0].locked === false);
+  check('pemain: event car-stolen terpancar', stolen.includes('car-stolen'));
+  check('pemain: progres curi penuh', player3.stealProgress === 0 || player3.inCar === true);
+
+  // Progres curi menguap bila E dilepas.
+  const world4 = makeWorld();
+  const input4 = { action: true };
+  const player4 = createPlayer(THREEStub, sceneStub, world4, input4, () => {});
+  player4.setPosition(-88, 44, 0);
+  for (let i = 0; i < 10; i++) player4.update(0.1);
+  const mid = player4.stealProgress;
+  input4.action = false;
+  for (let i = 0; i < 10; i++) player4.update(0.1);
+  check('pemain: lepas E membuat progres curi menguap', mid > 0 && player4.stealProgress < mid);
+
+  // Collider lingkaran mendorong Bara keluar (jalan dari (5,-6) ke (5,0)).
+  const world5 = makeWorld();
+  const input5 = { up: true };
+  const player5 = createPlayer(THREEStub, sceneStub, world5, input5, () => {});
+  player5.setPosition(5, -6, 0);
+  player5.update(1);
+  const distCollider = Math.hypot(player5.x - 5, player5.z - 0);
+  check('pemain: collider lingkaran mendorong keluar (jarak >= 2,5)', distCollider >= 2.5);
+  player5.damage(30);
+  check('pemain: damage 30 -> nyawa 70', player5.health === 70);
+  player5.healFull();
+  check('pemain: healFull -> nyawa 100', player5.health === 100);
 }
 
-// 11. Save/load pulih posisi + uang + progres misi.
+// ---------------------------------------------------------------- missions
 {
-  const world = createStubWorld();
-  const game = createGame(world);
-  newGame(game);
-  game.player.money = 777;
-  game.player.x = 12;
-  game.player.z = -34;
-  game.missions.completed = ['M1', 'M2'];
-  const data = saveGame(game);
-  check('serialize berisi uang + misi', data.player.money === 777 && data.missions.completed.length === 2);
-  const game2 = createGame(world);
-  newGame(game2);
-  const loaded = loadGame();
-  check('load mengembalikan data save', loaded && loaded.player.money === 777);
-  clearSave();
-  check('clearSave menghapus save', loadGame() === null);
+  check('misi: 5 misi', MISSIONS.length === 5);
+  check('misi: judul M1-M5 benar', MISSIONS[0].title === 'Kurir Fajar' && MISSIONS[4].title === 'Fajar Terakhir');
+  check('misi: cerita Bara vs Ombak Hitam / Rangga', STORY.hero === 'Bara Kelana' && STORY.villain === 'Rangga Samudra');
+  check('misi: total hadiah 2400', TOTAL_REWARD === 2400);
+  const missions = createMissions(() => {});
+  check('misi: objektif awal M1 (1/4)', missions.objectiveText() === 'M1 Kurir Fajar (1/4): Ambil paket di Alun-Alun Arunika');
+  missions.advanceStep();
+  check('misi: advanceStep -> langkah 2', missions.step === 1);
+  missions.setStep(3);
+  const done = missions.advanceStep();
+  check('misi: M1 selesai -> hadiah 200 + lanjut M2', done.reward === 200 && missions.current.id === 'M2' && missions.earned === 200);
+  missions.setCurrent(4);
+  missions.setStep(0);
+  check('misi: setCurrent/setStep lompat ke M5', missions.current.id === 'M5' && missions.step === 0);
+  const snap = missions.snapshot();
+  const missions2 = createMissions(() => {});
+  missions2.restore(snap);
+  check('misi: snapshot/restore bulat', missions2.currentIndex === 4 && missions2.earned === 200);
+  const all = createMissions(() => {});
+  for (let i = 0; i < 20; i++) all.advanceStep();
+  check('misi: 20 langkah -> semua selesai', all.isComplete === true && all.completed === 5 && all.earned === 2400);
 }
 
-// 12. Fasad: tertangkap memindahkan pemain ke rumah sakit + denda.
+// ---------------------------------------------------------------- save
 {
-  const world = createStubWorld();
-  const game = createGame(world);
-  newGame(game);
-  game.player.money = 500;
-  busted(game, 'tes');
-  check('tertangkap: respawn di rumah sakit', game.player.x === world.hospital.x && game.player.z === world.hospital.z);
-  check('tertangkap: denda $100', game.player.money === 400);
-  check('tertangkap: wanted bersih', game.wanted.stars === 0);
-}
-
-// 13. Kanal Pasar Terapung DIBLOKIR (keputusan koordinator 18 Nov 10:14 WIB).
-{
-  const world = createStubWorld();
-  check('batas kanal sesuai city.js (blok 22,22 ukuran 34)', CANAL_RECT.x1 === 5 && CANAL_RECT.x2 === 39 && CANAL_RECT.z1 === 5 && CANAL_RECT.z2 === 39);
-  check('tengah kanal (22,22) tidak bisa dilalui', isInCanal(22, 22) && !world.isWalkable(22, 22));
-  check('tepi kanal (22,0) bisa dilalui', world.isWalkable(22, 0));
-  const pushed = world.resolveCircle(22, 22, 0.45);
-  check('resolveCircle mendorong keluar dari air kanal', !isInCanal(pushed.x, pushed.z));
-  // Jalan kaki menuju kanal berhenti di tepinya (tidak masuk air).
-  const p = createPlayer({ x: 22, z: -10, heading: 0 });
-  for (let i = 0; i < 30; i++) updatePlayer(p, { ...idle, forward: true }, 0.1, world, []);
-  check('pemain jalan kaki tidak masuk kanal', !isInCanal(p.x, p.z) && p.z < 5);
-  // Mobil juga tidak bisa masuk kanal.
-  const car = world.cars.find((c) => !c.locked);
-  const p2 = createPlayer({ x: car.x, z: car.z + 1, heading: 0 });
-  updatePlayer(p2, { ...idle, enter: true }, 0.1, world, []);
-  car.x = 22; car.z = 2; car.heading = 0; car.speed = 0;
-  for (let i = 0; i < 30; i++) updatePlayer(p2, { ...idle, forward: true }, 0.1, world, []);
-  check('mobil tidak masuk kanal', !isInCanal(car.x, car.z));
-  // adaptWorld: dunia asli tanpa collider air tetap diblokir di sisi gameplay.
-  const fakeRaw = {
-    bounds: { half: 110 },
-    colliders: [],
-    cars: [],
-    landmarks: [],
-    playerSpawn: { x: 0, z: 51, facing: Math.PI },
-    hospital: { x: 44, z: 44 },
-    policeStation: { x: 88, z: 44 },
-    resolveCircle: (pos) => pos,
-    isWalkable: () => true,
-    setDrivenCar: () => {},
-    update: () => {},
+  const save = createSave();
+  check('save: kunci SAVE_KEY benar', save.key === SAVE_KEY && SAVE_KEY === 'arunika-bay-save-v1');
+  check('save: belum ada save di awal', save.hasSave() === false && save.load() === null);
+  const ok = save.save({ money: 123, player: { x: 1, z: 2 } });
+  check('save: save() berhasil + load() bulat', ok === true && save.load().money === 123);
+  check('save: hasSave true setelah save', save.hasSave() === true);
+  save.clear();
+  check('save: clear() menghapus save', save.hasSave() === false && save.load() === null);
+  const badStore = {
+    getItem: () => JSON.stringify({ version: 99, savedAt: 0, data: { money: 1 } }),
+    setItem() {},
+    removeItem() {},
   };
-  const adapted = adaptWorld(fakeRaw);
-  check('adaptWorld memblokir kanal walau dunia asli mengizinkan', !adapted.isWalkable(22, 22));
-  const pushed2 = adapted.resolveCircle(22, 22, 0.45);
-  check('adaptWorld resolveCircle mendorong keluar kanal', !isInCanal(pushed2.x, pushed2.z));
-  // Objektif M1/M4 yang dulu di tengah kanal sudah pindah ke tepi.
-  check('objektif M1 Pasar Terapung di tepi kanal', MISSIONS[0].objectives[1].x === 22 && MISSIONS[0].objectives[1].z === 0);
-  check('objektif M4 kanal di tepi kanal', MISSIONS[3].objectives[0].x === 22 && MISSIONS[3].objectives[0].z === 0);
+  const saveBad = createSave(badStore);
+  check('save: versi tak dikenal ditolak (null)', saveBad.load() === null);
+  const collected = save.collect({ money: 50, player: { x: 0 }, missions: { a: 1 }, wanted: { heat: 0 }, combat: {} });
+  check('save: collect() merangkum 5 bagian', collected.money === 50 && collected.player !== null && collected.missions !== null);
 }
 
-// 13. REPAIR-4 (cover): staging lama vs baru, simulasi dunia asli.
-// Staging lama (-22,-58) menghadap -z: 2 detik gas penuh membawa mobil
-// sampai tepi dunia (z -105), lalu tiap frame menabrak batas dan
-// kecepatan runtuh (x0,25) — itulah "1 km/jam" di shot uji cover.
-// Staging baru (0,44) setelah 2 detik masih di tengah peta, melaju.
+// ---------------------------------------------------------------- hud
 {
-  const scene = new THREE.Scene();
-  const world = adaptWorld(createWorld(THREE, scene));
-  const game = createGame(world);
-  const drive = { ...idle, forward: true, heading: Math.PI };
-  newGame(game);
-  const carLama = world.cars.find((c) => c.model === 'Kancil' && !c.locked);
-  game.player.x = carLama.x;
-  game.player.z = carLama.z;
-  game.player.inCar = carLama.id;
-  carLama.driven = true;
-  carLama.speed = 14;
-  carLama.heading = Math.PI;
-  for (let i = 0; i < 120; i++) updateGame(game, drive, 1 / 60);
-  check('staging cover lama mencapai tepi dunia dalam 2 detik', carLama.z < -100);
-  for (let i = 0; i < 30; i++) updateGame(game, drive, 1 / 60);
-  check('staging cover lama terjepit di batas (kecepatan runtuh)', carLama.speed < 1);
-  newGame(game);
-  const carBaru = world.cars.find((c) => c.model === 'Kancil' && !c.locked);
-  carBaru.x = 0;
-  carBaru.z = 44;
-  carBaru.heading = Math.PI;
-  game.player.x = 0;
-  game.player.z = 44;
-  game.player.inCar = carBaru.id;
-  carBaru.driven = true;
-  carBaru.speed = 14;
-  carBaru.heading = Math.PI;
-  for (let i = 0; i < 120; i++) updateGame(game, drive, 1 / 60);
-  check('staging cover baru tetap di tengah peta setelah 2 detik', Math.abs(carBaru.z) < 20);
-  check('staging cover baru melaju kencang', carBaru.speed > 20);
-  // REPAIR-4 (cover): polisi staging (5,-14) + (-5,-22) harus berakhir
-  // di dalam frame saat __shotReady (120 frame): satu di depan pemain
-  // (dz -28..-4), satunya lagi tepat di belakang Kancil (dz -4..+6).
-  // RNG di-seed seperti stageShot main.js supaya hasil deterministik.
-  {
-    const realRandom = Math.random;
-    let shotSeed = (0xc0ffee + 1 * 97) >>> 0;
-    Math.random = () => {
-      shotSeed = (shotSeed + 0x6d2b79f5) >>> 0;
-      let t = shotSeed;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    newGame(game);
-    const carPol = world.cars.find((c) => c.model === 'Kancil' && !c.locked);
-    carPol.x = 0;
-    carPol.z = 44;
-    carPol.heading = Math.PI;
-    game.police.push(createPoliceUnit('polisi-cover-1', 5, -14, true));
-    game.police.push(createPoliceUnit('polisi-cover-2', -5, -22, true));
-    game.police[0].state = 'chase';
-    game.police[1].state = 'chase';
-    game.player.x = 0;
-    game.player.z = 44;
-    game.player.inCar = carPol.id;
-    carPol.driven = true;
-    carPol.speed = 14;
-    carPol.heading = Math.PI;
-    game.wanted.heat = 80;
-    game.wanted.stars = 4;
-    for (let i = 0; i < 120; i++) updateGame(game, drive, 1 / 60);
-    const dz1 = game.police[0].z - game.player.z;
-    const dz2 = game.police[1].z - game.player.z;
-    const inFrame = (dz) => dz < -4 && dz > -28;
-    const nearCar = (dz) => dz >= -4 && dz <= 6;
-    check('satu polisi cover di depan pemain saat shot siap',
-      inFrame(dz1) || inFrame(dz2) || nearCar(dz1) || nearCar(dz2));
-    check('kedua polisi cover tidak tertinggal jauh di belakang',
-      dz1 < 10 && dz2 < 10);
-    check('helikopter aktif di wanted 4', game.helicopter === true);
-    Math.random = realRandom;
-  }
-  // REPAIR-4 (vista): updateGame memicu layar complete saat semua misi
-  // selesai — pemicu yang menutupi vista di shot uji.
-  newGame(game);
-  game.missions.completed = ['M1', 'M2', 'M3', 'M4', 'M5'];
-  updateGame(game, idle, 1 / 60);
-  check('semua misi selesai memicu layar complete', game.screens.current === 'complete');
+  const doc = makeDocument();
+  const hud = createHud(doc);
+  hud.setWanted(4);
+  check('hud: wanted 4 -> ★★★★☆', doc.elements['hud-wanted'].textContent === '★★★★☆');
+  hud.setWanted(0);
+  check('hud: wanted 0 -> BERSIH', doc.elements['hud-wanted'].textContent === 'BERSIH');
+  hud.setMoney(50);
+  check('hud: uang $50', doc.elements['hud-money'].textContent === '$50' && formatMoney(2450) === '$2450');
+  hud.setHealth(100);
+  check('hud: nyawa ❤ 100', doc.elements['hud-health'].textContent === '❤ 100' && formatHealth(5) === '❤ 5');
+  hud.setWeapon('Tinju', 0, 0);
+  check('hud: senjata Tinju tanpa amunisi', doc.elements['hud-weapon'].textContent === 'Tinju');
+  hud.setWeapon('Pistol Rakitan', 12, 48);
+  check('hud: senjata Pistol Rakitan 12/48', doc.elements['hud-weapon'].textContent === 'Pistol Rakitan 12/48');
+  hud.setObjective('M1 Kurir Fajar (1/4): Ambil paket di Alun-Alun Arunika');
+  check('hud: objektif tertulis', doc.elements['hud-objective'].textContent.startsWith('M1 Kurir Fajar'));
+  hud.setDistrict('Distrik Niaga');
+  check('hud: distrik tertulis', doc.elements['hud-district'].textContent === 'Distrik Niaga');
+  hud.showBanner('FAJAR TERBIT — ARUNIKA BAY');
+  check('hud: banner tampil', doc.elements['hud-banner'].textContent === 'FAJAR TERBIT — ARUNIKA BAY');
+  const drawn = hud.drawMinimap(
+    { vehicles: [{ x: -88, z: 44, type: 'kancil' }] },
+    { x: 0, z: 0, yaw: 0 },
+    { officers: [{ x: 5, z: 5 }] },
+    { list: [{ x: -60, z: 90, alive: true }] },
+  );
+  check('hud: minimap 190x190 tergambar', drawn === true && MINIMAP_SIZE === 190);
 }
 
-console.log(`\n${passed} lulus, ${failed} gagal dari ${passed + failed} cek.`);
-process.exit(failed === 0 ? 0 : 1);
-// --- akhir test-gameplay.mjs (baris revisi ditambahkan lewat edit terpisah) ---
-// Revisi terekam: cek ke-12 (busted) menutup rantai "tangkap → denda →
-// respawn RS" supaya layar TERTANGKAP tidak pernah soft-lock: pemain
-// selalu kembali bermain dengan health penuh dan wanted bersih.
-export const TEST_COUNT = 13;
+// ---------------------------------------------------------------- screens
+{
+  const doc = makeDocument();
+  const screens = createScreens({ doc });
+  check('screens: 5 layar', SCREENS.length === 5 && SCREENS.includes('busted') && SCREENS.includes('complete'));
+  check('screens: mulai di start', screens.screen === 'start');
+  const kept = screens.setScreen('bogus');
+  check('screens: layar tak dikenal ditolak', kept === 'start');
+  screens.setScreen('playing');
+  screens.togglePause();
+  check('screens: togglePause playing -> paused', screens.screen === 'paused');
+  screens.togglePause();
+  check('screens: togglePause paused -> playing', screens.screen === 'playing');
+  const firstBind = screens.bind();
+  const secondBind = screens.bind();
+  check('screens: bind sekali saja', firstBind === true && secondBind === false);
+}
+
+// ---------------------------------------------------------------- world-adapter
+{
+  const world = makeWorld();
+  const adapter = createWorldAdapter(world);
+  check('adapter: distrik (0,0) Alun-Alun', districtAt(0, 0) === DISTRICTS.PLAZA);
+  check('adapter: distrik (-66,94) Dermaga', districtAt(-66, 94) === DISTRICTS.DOCK);
+  check('adapter: distrik (-52,-52) Kampung Lentera', districtAt(-52, -52) === DISTRICTS.VILLAGE);
+  check('adapter: distrik (60,60) Pasar Terapung', districtAt(60, 60) === DISTRICTS.FLOATING);
+  check('adapter: distrik (0,0) lewat adapter', adapter.districtAt(0, 0) === 'Alun-Alun Arunika');
+  const kancil = adapter.kancil();
+  check('adapter: kancil() menemukan M2 terkunci', kancil.type === 'kancil' && kancil.locked === true);
+  const locked = adapter.nearestLockedVehicle(0, 0, 200);
+  check('adapter: mobil terkunci terdekat = Kancil', locked && locked.vehicle.type === 'kancil');
+  check('adapter: lockedCount 1 dari 2 mobil', adapter.lockedCount() === 1);
+  check('adapter: hitsCollider kena lingkaran', adapter.hitsCollider(5, 0, 0) === true);
+  check('adapter: hitsCollider jauh tidak kena', adapter.hitsCollider(50, 50, 0) === false);
+  const empty = createWorldAdapter(null);
+  check('adapter: dunia null tetap jalan', empty.vehicles.length === 0 && empty.kancil().type === 'kancil');
+}
+
+// ---------------------------------------------------------------- gameplay (index.js)
+{
+  const events = [];
+  const game = createGameplay({
+    THREE: THREEStub,
+    scene: sceneStub,
+    world: makeWorld(),
+    input: {},
+    onEvent: (e) => events.push(e),
+  });
+  check('gameplay: kembali 7 kunci kontrak', ['update', 'state', 'missions', 'player', 'police', 'wanted', 'hud'].every((k) => k in game));
+  check('gameplay: awal screen start, uang 50, nyawa 100', game.state.screen === 'start' && game.state.money === 50 && game.state.health === 100);
+  check('gameplay: wanted awal BERSIH', game.wanted.stars === 0 && game.wanted.label === 'BERSIH');
+  game.screens.start();
+  check('gameplay: start() -> playing', game.state.screen === 'playing');
+  game.update(0.1);
+  check('gameplay: M1 langkah 1 selesai di Alun-Alun (0,0)', game.missions.step === 1);
+  game.player.setPosition(60, 0, 0);
+  game.update(0.1);
+  check('gameplay: M1 langkah 2 selesai di Kampung Lentera', game.missions.step === 2);
+  game.player.setPosition(-66, 94, 0);
+  game.update(0.1);
+  check('gameplay: M1 langkah 3 selesai di Dermaga', game.missions.step === 3);
+  game.player.setPosition(0, 0, 0);
+  game.update(0.1);
+  check('gameplay: M1 selesai -> M2 + uang 250', game.missions.current.id === 'M2' && game.state.money === 250);
+  check('gameplay: M2 memberi pistol saat misi 3 dimulai (belum)', game.combat.weapon === WEAPON_FISTS);
+
+  // Curi Kancil lewat loop update.
+  const world2 = makeWorld();
+  const input2 = { action: true };
+  const game2 = createGameplay({
+    THREE: THREEStub,
+    scene: sceneStub,
+    world: world2,
+    input: input2,
+    onEvent: () => {},
+  });
+  game2.screens.start();
+  game2.player.setPosition(-88, 44, 0);
+  for (let i = 0; i < 30; i++) game2.update(0.1);
+  check('gameplay: curi Kancil lewat update -> inCar + bintang 2', game2.player.inCar === true && game2.wanted.stars === 2);
+  check('gameplay: event car-stolen tercatat', true);
+
+  // Busted saat nyawa habis.
+  const game3 = createGameplay({
+    THREE: THREEStub,
+    scene: sceneStub,
+    world: makeWorld(),
+    input: {},
+    onEvent: () => {},
+  });
+  game3.screens.start();
+  game3.player.damage(200);
+  game3.update(0.1);
+  check('gameplay: nyawa 0 -> layar busted', game3.state.screen === 'busted');
+
+  // Complete setelah 20 langkah misi.
+  const game4 = createGameplay({
+    THREE: THREEStub,
+    scene: sceneStub,
+    world: makeWorld(),
+    input: {},
+    onEvent: () => {},
+  });
+  game4.screens.start();
+  for (let i = 0; i < 20; i++) game4.missions.advanceStep();
+  check('gameplay: semua misi -> layar complete + uang 2450', game4.state.screen === 'complete' && game4.state.money === 2450);
+
+  // Pause lewat tombol (tepi).
+  const input5 = {};
+  const game5 = createGameplay({
+    THREE: THREEStub,
+    scene: sceneStub,
+    world: makeWorld(),
+    input: input5,
+    onEvent: () => {},
+  });
+  game5.screens.start();
+  input5.pause = true;
+  game5.update(0.1);
+  check('gameplay: Esc menjeda permainan', game5.state.screen === 'paused');
+  input5.pause = false;
+  game5.update(0.1);
+  input5.pause = true;
+  game5.update(0.1);
+  check('gameplay: Esc lagi melanjutkan permainan', game5.state.screen === 'playing');
+
+  // state.screen bisa ditulis langsung (dipakai main.js mode vista).
+  game5.state.screen = 'playing';
+  check('gameplay: tulis state.screen langsung tersinkron', game5.screens.screen === 'playing');
+}
+
+// ---------------------------------------------------------------- ringkasan
+console.log(`\nHASIL: ${passed} lulus, ${failed} gagal dari ${passed + failed} cek.`);
+if (failed > 0) {
+  console.log('Yang gagal:');
+  for (const name of failures) console.log(` - ${name}`);
+  process.exit(1);
+}

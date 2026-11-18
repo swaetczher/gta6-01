@@ -1,201 +1,469 @@
-// index.js — Fasad gameplay ARUNIKA BAY: satu update(dt, input) per frame
-// yang merangkai semua modul: pemain, combat, wanted, polisi, preman,
-// misi, layar, save. main.js (three.js) hanya memanggil updateGame dan
-// membaca state untuk dirender; logika di sini tanpa three.js.
-import { createPlayer, updatePlayer } from './player.js';
-import { createCombat, updateCombat, attack, switchWeapon, startReload } from './combat.js';
-import { createWanted, addHeat, updateWanted, heatForCrime, clearWanted } from './wanted.js';
-import { syncPolice, updatePolice, helicopterActive } from './police.js';
-import { spawnThugs, updateThugs } from './enemies.js';
-import {
-  MISSIONS, createMissionState, getMission, nextMissionId,
-  startMission, updateMission,
-} from './missions.js';
-import { createScreenState, setScreen, isPlaying } from './screens.js';
-import { saveGame, loadGame, applySave } from './save.js';
+// index.js — Orkestrator gameplay ARUNIKA BAY.
+//
+// `createGameplay(ctx)` merakit semua modul gameplay menjadi satu game yang
+// jalan: pemain, polisi, preman, tarung, misi, wanted, HUD, layar, dan save.
+// Kontrak (lihat CONTRACT.md):
+//   ctx = { THREE, scene, world, input, onEvent }
+//   kembali { update(dt), state, missions, player, police, wanted, hud }
+//   (+ enemies, combat, save, screens, adapter sebagai tambahan untuk
+//   staging shot di main.js — A memakainya untuk melahirkan preman/polisi
+//   dan menyetel HUD di mode ?shot=).
+//
+// `state.screen` adalah satu-satunya sumber layar: menulisnya (mis.
+// `state.screen = 'playing'` dari main.js saat mode vista) otomatis
+// menyinkronkan modul screens + visibilitas #menu-screen.
+//
+// Alur layar: start -> (tombol mulai) -> playing -> (Esc/P) paused ->
+// playing; playing -> (nyawa 0 / tertangkap) busted; playing -> (5 misi
+// selesai) complete. Autosave tiap 15 detik saat bermain + tiap misi
+// selesai. Muat save lama otomatis saat game dibuat.
 
-export { MISSIONS };
+import { createWorldAdapter, districtAt, WAREHOUSE_SPOT, HIDEOUT_SPOT } from './world-adapter.js';
+import { createPlayer, keyDown, PLAYER_MONEY_START } from './player.js';
+import { createPolice } from './police.js';
+import { createWanted, HEAT_FOR_STEAL, HEAT_FOR_KILL } from './wanted.js';
+import { createEnemies } from './enemies.js';
+import { createCombat } from './combat.js';
+import { createMissions } from './missions.js';
+import { createHud } from './hud.js';
+import { createScreens, SCREENS } from './screens.js';
+import { createSave } from './save.js';
 
-export function createGame(world) {
+/** Jeda autosave (detik) saat bermain. */
+export const AUTOSAVE_INTERVAL = 15;
+
+// Jarak pemicu syarat misi (meter).
+export const MISSION_NEAR_KANCIL = 6;
+export const MISSION_NEAR_WAREHOUSE = 5;
+export const MISSION_NEAR_HIDEOUT = 8;
+
+// M4: berapa detik bertahan dengan bintang >= 3 sebelum langkah 1 selesai.
+export const M4_SURVIVE_SECONDS = 5;
+
+/** Apakah `name` layar yang sah (re-ekspor untuk main.js). */
+export function isGameScreen(name) {
+  return SCREENS.includes(name);
+}
+
+/**
+ * Rakit game dari konteks main.js.
+ *
+ * @param {object} ctx
+ * @param {object} ctx.THREE pustaka three.js
+ * @param {object} ctx.scene scene three.js
+ * @param {object} ctx.world hasil `buildWorld(THREE, scene)`
+ * @param {object} ctx.input objek tombol dari main.js
+ * @param {(event:object)=>void} [ctx.onEvent] dipanggil untuk kejadian
+ *   penting game (`mission-step`, `mission-complete`, `car-stolen`,
+ *   `busted`, `complete`, `wanted-change`)
+ */
+export function createGameplay(ctx) {
+  const THREE = ctx.THREE;
+  const scene = ctx.scene;
+  const world = ctx.world || {};
+  const input = ctx.input || {};
+  const emitExternal = typeof ctx.onEvent === 'function' ? ctx.onEvent : null;
+
+  const adapter = createWorldAdapter(world);
+  const hud = createHud();
+  const save = createSave();
+
+  // --- State game (satu sumber kebenaran untuk HUD + main.js). ---
   const state = {
-    world,
-    player: createPlayer(world.spawn),
-    combat: createCombat(),
-    wanted: createWanted(),
-    police: [],
-    thugs: [],
-    missions: createMissionState(),
-    missionDefs: MISSIONS,
-    screens: createScreenState(),
-    events: [],
-    toasts: [],
+    money: PLAYER_MONEY_START,
+    health: 100,
+    weapon: 'fists',
+    ammo: 0,
+    reserveAmmo: 0,
+    wantedStars: 0,
+    objective: '',
+    dialog: '',
+    district: 'Distrik Niaga',
     time: 0,
-    helicopter: false,
-    gameOver: false,
-    allMissionsDone: false,
   };
-  return state;
-}
 
-export function newGame(state) {
-  state.player = createPlayer(state.world.spawn);
-  state.combat = createCombat();
-  state.wanted = createWanted();
-  state.police = [];
-  state.thugs = [];
-  state.missions = createMissionState();
-  state.events = [];
-  state.time = 0;
-  state.gameOver = false;
-  state.allMissionsDone = false;
-  setScreen(state.screens, 'playing');
-  return state;
-}
-
-export function continueGame(state) {
-  const data = loadGame();
-  if (!data) return false;
-  newGame(state);
-  applySave(state, data);
-  setScreen(state.screens, 'playing');
-  return true;
-}
-
-// input: { forward, back, left, right, run, jump, enter, enterHeld,
-//          attack, reload, weapon, startMission, pause, heading, lookDX }
-export function updateGame(state, input, dt) {
-  state.time += dt;
-  if (!isPlaying(state.screens)) return state;
-  const { player, world } = state;
-  const events = state.events;
-
-  // Arah hadap dari mouse (pointer-lock) bila diberikan main.js.
-  if (typeof input.heading === 'number') player.heading = input.heading;
-
-  updatePlayer(player, input, dt, world, events);
-  updateCombat(state.combat, dt);
-  if (input.weapon) switchWeapon(state.combat, input.weapon);
-  if (input.reload) startReload(state.combat);
-  if (input.attack) {
-    const targets = [...state.thugs, ...state.police.map((p) => ({ ...p, health: 40 }))];
-    const hits = attack(state.combat, player.x, player.z, player.heading, targets);
-    for (const hit of hits) {
-      const thug = state.thugs.find((t) => t.id === hit.id);
-      if (thug && hit.killed) events.push({ type: 'thugDown', id: thug.id });
-      const cop = state.police.find((p) => p.id === hit.id);
-      if (cop && hit.killed) addHeat(state.wanted, heatForCrime('hurtPolice'));
-      else if (thug) addHeat(state.wanted, heatForCrime('hurtThug'));
-    }
-    if (state.combat.weapon === 'pistol' && hits.length === 0) {
-      // Tembakan yang meleset tetap berisik: sedikit panas bila ada polisi dekat.
-      if (state.police.some((p) => Math.hypot(p.x - player.x, p.z - player.z) < 30)) {
-        addHeat(state.wanted, 4);
-      }
-    }
-  }
-
-  // Misi: Enter memulai misi berikutnya; preman misi di-spawn sekali.
-  if (input.startMission && !state.missions.currentId) {
-    const next = nextMissionId(state.missions.completed);
-    if (next) {
-      const mission = startMission(state.missions, next);
-      addHeat(state.wanted, mission.wantedOnStart || 0);
-      if (mission.thugs && !state.missions.thugsSpawned) {
-        state.thugs = spawnThugs(mission.thugs);
-        state.missions.thugsSpawned = true;
-      }
-      events.push({ type: 'missionStart', missionId: next, intro: mission.intro });
-    }
-  }
-  updateMission(state.missions, {
-    player, world, thugs: state.thugs, wanted: state.wanted, events,
+  // Layar: properti state.screen menyinkronkan modul screens.
+  let screenValue = 'start';
+  const screens = createScreens({
+    onStart: () => {
+      screenValue = 'playing';
+    },
+    onResume: () => {
+      screenValue = 'playing';
+    },
+    onRestart: () => {
+      screenValue = 'playing';
+    },
   });
-  updateThugs(state.thugs, player, dt, world, events);
+  Object.defineProperty(state, 'screen', {
+    enumerable: true,
+    get() {
+      return screenValue;
+    },
+    set(value) {
+      if (!SCREENS.includes(value)) return;
+      screenValue = value;
+      screens.setScreen(value);
+    },
+  });
 
-  // Wanted + polisi.
-  syncPolice(state.police, state.wanted.stars, player, world);
-  const seen = updatePolice(state.police, player, dt, world, events);
-  updateWanted(state.wanted, dt, seen.anySees);
-  state.helicopter = helicopterActive(state.wanted.stars);
-  syncPolice(state.police, state.wanted.stars, player, world);
-
-  // Konsumsi event yang dihasilkan modul.
-  drainEvents(state);
-  if (world.update) world.update(dt, { player, wanted: state.wanted });
-
-  if (player.health <= 0) {
-    player.health = 0;
-    busted(state, 'Kau tumbang di jalanan Arunika.');
-  }
-  if (state.missions.completed.length >= MISSIONS.length && !state.allMissionsDone) {
-    state.allMissionsDone = true;
-    setScreen(state.screens, 'complete');
-    events.push({ type: 'gameComplete' });
-  }
-  return state;
-}
-
-function drainEvents(state) {
-  const events = state.events;
-  while (events.length > 0) {
-    const ev = events.shift();
-    if (ev.type === 'carStolen') {
-      addHeat(state.wanted, ev.heat || 25);
-      state.toasts.push({ text: 'Mobil dicuri! Polisi Pelabuhan waspada.', ttl: 3 });
-    } else if (ev.type === 'missionComplete') {
-      state.toasts.push({ text: `Misi selesai! Hadiah $${ev.reward}.`, ttl: 4 });
-      saveGame(state); // autosave tiap misi selesai
-    } else if (ev.type === 'missionStart') {
-      state.toasts.push({ text: ev.intro, ttl: 5 });
-    } else if (ev.type === 'busted') {
-      busted(state, 'Polisi Pelabuhan menangkap Bara.');
-    } else if (ev.type === 'playerHit' || ev.type === 'playerShot') {
-      // Health sudah dikurangi modul penyerang; tidak ada aksi tambahan.
+  /** Kirim kejadian ke luar (main.js) — tanpa pernah melempar. */
+  function emit(event) {
+    if (!emitExternal) return;
+    try {
+      emitExternal(event);
+    } catch (_err) {
+      // Pendengar main.js tidak boleh mematikan game.
     }
   }
-}
 
-export function busted(state, reason) {
-  if (state.screens.current === 'busted') return;
-  state.player.money = Math.max(0, state.player.money - state.screens.bustedFine);
-  state.player.health = 100;
-  state.player.inCar = null;
-  state.player.x = state.world.hospital.x;
-  state.player.z = state.world.hospital.z;
-  state.player.y = 0;
-  clearWanted(state.wanted);
-  state.police = [];
-  state.thugs = [];
-  state.missions.currentId = null;
-  state.missions.started = false;
-  state.toasts.push({ text: reason, ttl: 4 });
-  setScreen(state.screens, 'busted');
-}
+  // --- Sub-sistem. ---
+  const wanted = createWanted(0, (stars) => {
+    state.wantedStars = stars;
+    emit({ type: 'wanted-change', stars });
+  });
 
-export function startNextMission(state) {
-  if (state.missions.currentId) return false;
-  const next = nextMissionId(state.missions.completed);
-  if (!next) return false;
-  const mission = startMission(state.missions, next);
-  addHeat(state.wanted, mission.wantedOnStart || 0);
-  if (mission.thugs && !state.missions.thugsSpawned) {
-    state.thugs = spawnThugs(mission.thugs);
-    state.missions.thugsSpawned = true;
+  const police = createPolice(THREE, scene, (event) => {
+    if (event && event.type === 'arrested') setBusted('Tertangkap polisi.');
+  });
+
+  const enemies = createEnemies(THREE, scene, (event) => {
+    if (event && event.type === 'enemy-down') {
+      wanted.addHeat(HEAT_FOR_KILL);
+      emit(event);
+    }
+  });
+
+  const player = createPlayer(THREE, scene, world, input, (event) => {
+    if (!event) return;
+    if (event.type === 'car-stolen') {
+      wanted.addHeat(HEAT_FOR_STEAL);
+      stolenKancil = true;
+      emit(event);
+    } else {
+      emit(event);
+    }
+  });
+
+  const combat = createCombat({
+    onEvent: (event) => emit(event),
+    onPlayerDamage: (damage) => player.damage(damage),
+    getPlayerPos: () => ({ x: player.x, z: player.z }),
+  });
+
+  const missions = createMissions((event) => {
+    if (!event) return;
+    if (event.type === 'mission-complete') {
+      state.money += event.reward || 0;
+      if (event.mission === 'M3') combat.givePistol();
+      autosave();
+      if (missions.isComplete) setComplete();
+    }
+    emit(event);
+  });
+
+  // --- Pelacak progres misi (bendera + baseline hitungan). ---
+  let stolenKancil = false;
+  let defeatedBaseline = 0;
+  let m4SurviveTimer = 0;
+  let m4Entered = false;
+  let m3GuardsSpawned = false;
+  let m5GruntsSpawned = false;
+  let m5BossSpawned = false;
+  let bossRef = null;
+  let lastMissionIndex = 0;
+  let autosaveTimer = 0;
+  let prevPause = false;
+  let prevAttack = false;
+
+  /** Pindah layar + spanduk layar akhir. */
+  function setScreen(name) {
+    state.screen = name;
   }
-  return true;
-}
-// --- akhir index.js (baris revisi ditambahkan lewat edit terpisah) ---
-// Revisi terekam: urutan update sengaja pemain → combat → misi → preman
-// → polisi → wanted, supaya panas dari aksi frame ini langsung mengatur
-// jumlah polisi di frame yang sama (bukan tertinggal satu frame).
-export function gameSnapshot(state) {
+
+  function setBusted(reason) {
+    if (state.screen !== 'playing') return;
+    setScreen('busted');
+    hud.showBanner('TERTANGKAP!');
+    hud.showToast(reason || 'Bara Kelana tertangkap.');
+    emit({ type: 'busted', reason: reason || '' });
+    autosave();
+  }
+
+  function setComplete() {
+    if (state.screen === 'complete') return;
+    setScreen('complete');
+    hud.showBanner('FAJAR TERBIT — ARUNIKA BAY');
+    hud.showToast('Semua misi selesai — Arunika Bay bebas!');
+    emit({ type: 'complete', money: state.money });
+    autosave();
+  }
+
+  /** Simpan progres saat ini (diam bila gagal). */
+  function autosave() {
+    save.save(
+      save.collect({
+        money: state.money,
+        player: player.snapshot(),
+        missions: missions.snapshot(),
+        wanted: wanted.snapshot(),
+        combat: combat.snapshot(),
+      }),
+    );
+  }
+
+  /** Dipanggil sekali saat memasuki misi baru (efek samping per misi). */
+  function enterMission(index) {
+    if (index === 3 && !m4Entered) {
+      // M4: polisi langsung memburu — panas naik ke 3 bintang.
+      m4Entered = true;
+      m4SurviveTimer = 0;
+      wanted.setHeat(70);
+      const near = adapter.findVehicleNear(player.x, player.z, 40);
+      if (near) {
+        police.spawnOfficer(player.x + 8, player.z + 6, 'chase');
+        police.spawnOfficer(player.x - 8, player.z - 6, 'chase');
+      } else {
+        police.spawnOfficer(player.x + 8, player.z + 6, 'chase');
+        police.spawnOfficer(player.x - 8, player.z - 6, 'chase');
+      }
+      state.dialog = 'Empat mobil polisi dan helikopter! Lewat kanal Pasar Terapung!';
+    }
+    if (index === 2 && !m3GuardsSpawned) {
+      // M3: begitu sampai Dermaga, 3 preman menjaga gudang.
+      m3GuardsSpawned = true;
+      enemies.spawnGuards(WAREHOUSE_SPOT.x, WAREHOUSE_SPOT.z, 3);
+      combat.givePistol();
+    }
+  }
+
+  /** Cek syarat langkah misi aktif dari posisi + kejadian game. */
+  function checkMissions(dt) {
+    const mission = missions.current;
+    if (!mission) return;
+    if (missions.currentIndex !== lastMissionIndex) {
+      lastMissionIndex = missions.currentIndex;
+      state.dialog = missions.introText();
+      enterMission(missions.currentIndex);
+    }
+    const step = missions.step;
+    const district = state.district;
+
+    if (mission.id === 'M1') {
+      if (step === 0 && district === 'Alun-Alun Arunika') missions.advanceStep();
+      else if (step === 1 && district === 'Kampung Lentera') missions.advanceStep();
+      else if (step === 2 && district === 'Dermaga Arunika') missions.advanceStep();
+      else if (step === 3 && district === 'Alun-Alun Arunika') missions.advanceStep();
+    } else if (mission.id === 'M2') {
+      if (step === 0) {
+        const kancil = adapter.kancil();
+        const dx = player.x - (kancil.x || 0);
+        const dz = player.z - (kancil.z || 0);
+        if (Math.sqrt(dx * dx + dz * dz) < MISSION_NEAR_KANCIL) missions.advanceStep();
+      } else if (step === 1 && stolenKancil) {
+        missions.advanceStep();
+      } else if (step === 2 && player.inCar && district === 'Kampung Lentera') {
+        missions.advanceStep();
+      } else if (step === 3 && !player.inCar && district === 'Kampung Lentera' && stolenKancil) {
+        missions.advanceStep();
+      }
+    } else if (mission.id === 'M3') {
+      if (step === 0 && district === 'Dermaga Arunika') {
+        enterMission(2);
+        missions.advanceStep();
+      } else if (step === 1 && enemies.defeatedCount() - defeatedBaseline >= 3) {
+        defeatedBaseline = enemies.defeatedCount();
+        missions.advanceStep();
+      } else if (step === 2) {
+        const dx = player.x - WAREHOUSE_SPOT.x;
+        const dz = player.z - WAREHOUSE_SPOT.z;
+        if (Math.sqrt(dx * dx + dz * dz) < MISSION_NEAR_WAREHOUSE) missions.advanceStep();
+      } else if (step === 3) {
+        const dx = player.x - WAREHOUSE_SPOT.x;
+        const dz = player.z - WAREHOUSE_SPOT.z;
+        if (
+          Math.sqrt(dx * dx + dz * dz) < MISSION_NEAR_WAREHOUSE &&
+          keyDown(input, 'action')
+        ) {
+          missions.advanceStep();
+        }
+      }
+    } else if (mission.id === 'M4') {
+      if (step === 0) {
+        if (wanted.stars >= 3) {
+          m4SurviveTimer += dt;
+          if (m4SurviveTimer >= M4_SURVIVE_SECONDS) missions.advanceStep();
+        }
+      } else if (step === 1 && district === 'Pasar Terapung') {
+        missions.advanceStep();
+      } else if (step === 2 && wanted.stars <= 2) {
+        missions.advanceStep();
+      } else if (step === 3 && district === 'Alun-Alun Arunika' && wanted.stars === 0) {
+        missions.advanceStep();
+      }
+    } else if (mission.id === 'M5') {
+      if (step === 0) {
+        const dx = player.x - HIDEOUT_SPOT.x;
+        const dz = player.z - HIDEOUT_SPOT.z;
+        if (Math.sqrt(dx * dx + dz * dz) < MISSION_NEAR_HIDEOUT) {
+          if (!m5GruntsSpawned) {
+            m5GruntsSpawned = true;
+            defeatedBaseline = enemies.defeatedCount();
+            enemies.spawnGuards(HIDEOUT_SPOT.x, HIDEOUT_SPOT.z, 4);
+          }
+          missions.advanceStep();
+        }
+      } else if (step === 1 && enemies.defeatedCount() - defeatedBaseline >= 4) {
+        defeatedBaseline = enemies.defeatedCount();
+        if (!m5BossSpawned) {
+          m5BossSpawned = true;
+          bossRef = enemies.spawnBoss(HIDEOUT_SPOT.x + 4, HIDEOUT_SPOT.z);
+        }
+        missions.advanceStep();
+      } else if (step === 2 && bossRef && !bossRef.alive) {
+        missions.advanceStep();
+      } else if (step === 3) {
+        const dx = player.x - HIDEOUT_SPOT.x;
+        const dz = player.z - HIDEOUT_SPOT.z;
+        if (
+          Math.sqrt(dx * dx + dz * dz) < MISSION_NEAR_HIDEOUT &&
+          keyDown(input, 'action')
+        ) {
+          missions.advanceStep();
+        }
+      }
+    }
+  }
+
+  /** Pulihkan progres dari save lama (bila ada). */
+  function restoreSave() {
+    const data = save.load();
+    if (!data) return false;
+    if (typeof data.money === 'number') state.money = Math.max(0, Math.floor(data.money));
+    if (data.player) player.restore(data.player);
+    if (data.missions) missions.restore(data.missions);
+    if (data.wanted) wanted.restore(data.wanted);
+    if (data.combat) combat.restore(data.combat);
+    lastMissionIndex = missions.currentIndex;
+    state.dialog = missions.introText();
+    return true;
+  }
+
+  /** Satu frame game. */
+  function update(dt) {
+    const step = Math.max(0, dt || 0);
+    state.time += step;
+
+    // Jeda (Esc/P) — deteksi tepi tombol, bukan level.
+    const pauseNow = keyDown(input, 'pause');
+    if (pauseNow && !prevPause) {
+      if (state.screen === 'playing' || state.screen === 'paused') {
+        screens.togglePause();
+        screenValue = screens.screen;
+      }
+    }
+    prevPause = pauseNow;
+
+    if (state.screen !== 'playing') {
+      hud.update({
+        money: state.money,
+        health: player.health,
+        weapon: combat.weaponLabel,
+        ammo: combat.ammo,
+        reserveAmmo: combat.reserveAmmo,
+        wantedStars: wanted.stars,
+        objective: missions.objectiveText(),
+        dialog: state.dialog,
+        district: state.district,
+      });
+      return;
+    }
+
+    // Serang (Space/klik) — deteksi tepi tombol.
+    const attackNow = keyDown(input, 'attack');
+    if (attackNow && !prevAttack) {
+      combat.attack({ x: player.x, z: player.z }, enemies.list, (target, damage) =>
+        enemies.damage(target, damage),
+      );
+    }
+    prevAttack = attackNow;
+
+    player.update(step);
+    enemies.update(step, { x: player.x, z: player.z }, (damage) => player.damage(damage));
+    combat.update(step);
+    combat.enemyFire(step, enemies.list);
+    const arrest = police.update(step, { x: player.x, z: player.z }, wanted.stars);
+    wanted.decay(step);
+
+    // Sinkron state dari sub-sistem.
+    state.health = player.health;
+    state.weapon = combat.weaponLabel;
+    state.ammo = combat.ammo;
+    state.reserveAmmo = combat.reserveAmmo;
+    state.wantedStars = wanted.stars;
+    state.district = districtAt(player.x, player.z);
+    state.objective = missions.objectiveText();
+
+    checkMissions(step);
+
+    // Bara kehabisan nyawa -> tertangkap.
+    if (player.health <= 0) {
+      setBusted('Bara Kelana kehabisan nyawa.');
+    } else if (arrest === 'arrest') {
+      setBusted('Tertangkap polisi.');
+    }
+
+    // Autosave berkala saat bermain.
+    autosaveTimer += step;
+    if (autosaveTimer >= AUTOSAVE_INTERVAL) {
+      autosaveTimer = 0;
+      autosave();
+    }
+
+    hud.update({
+      money: state.money,
+      health: state.health,
+      weapon: state.weapon,
+      ammo: state.ammo,
+      reserveAmmo: state.reserveAmmo,
+      wantedStars: state.wantedStars,
+      objective: state.objective,
+      dialog: state.dialog,
+      district: state.district,
+    });
+    hud.drawMinimap(adapter, player, police, enemies);
+  }
+
+  // --- Mulai: ikat tombol, muat save, tulis HUD awal. ---
+  screens.bind();
+  restoreSave();
+  state.objective = missions.objectiveText();
+  state.dialog = missions.introText();
+  state.district = districtAt(player.x, player.z);
+  hud.update({
+    money: state.money,
+    health: player.health,
+    weapon: combat.weaponLabel,
+    ammo: combat.ammo,
+    reserveAmmo: combat.reserveAmmo,
+    wantedStars: wanted.stars,
+    objective: state.objective,
+    dialog: state.dialog,
+    district: state.district,
+  });
+
   return {
-    player: { x: state.player.x, z: state.player.z, heading: state.player.heading, health: state.player.health, money: state.player.money, inCar: state.player.inCar },
-    wantedStars: state.wanted.stars,
-    police: state.police.length,
-    thugsAlive: state.thugs.filter((t) => t.alive).length,
-    missionsDone: state.missions.completed.length,
-    screen: state.screens.current,
-    helicopter: state.helicopter,
+    update,
+    state,
+    missions,
+    player,
+    police,
+    wanted,
+    hud,
+    enemies,
+    combat,
+    save,
+    screens,
+    adapter,
   };
 }

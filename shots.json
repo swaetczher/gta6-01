@@ -1,0 +1,6 @@
+[
+  { "name": "1-cover-chase.jpg", "query": "?shot=cover&seed=1" },
+  { "name": "2-foot-lentera.jpg", "query": "?shot=foot&seed=1" },
+  { "name": "3-heist.jpg", "query": "?shot=heist&seed=1" },
+  { "name": "4-vista.jpg", "query": "?shot=vista&seed=1" }
+]

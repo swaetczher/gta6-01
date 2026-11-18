@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARUNIKA BAY — Kota Fajar</title>
+<meta name="description" content="ARUNIKA BAY — open-world crime di kota pelabuhan Indonesia saat fajar. Jalan kaki, curi mobil, kabur dari Polair Arunika. Game orisinal, tanpa aset game komersial.">
+<style>
+  :root {
+    --hud-bg: rgba(20, 16, 24, 0.72);
+    --hud-text: #ffe9c8;
+    --accent: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #1a1210; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--hud-text); }
+  #game-canvas { display: block; width: 100vw; height: 100vh; }
+
+  /* Layar muat / start — ditutup Gameplay saat game mulai. */
+  #loading-screen {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    background: linear-gradient(180deg, #2e4a7a 0%, #ff9a5c 55%, #ffc98a 100%);
+    color: #fff; text-align: center; z-index: 40;
+  }
+  #loading-screen h1 { margin: 0; font-size: 52px; letter-spacing: 6px; text-shadow: 0 3px 18px rgba(0,0,0,.45); }
+  #loading-screen p { margin: 0; font-size: 18px; text-shadow: 0 2px 10px rgba(0,0,0,.45); }
+  #loading-screen .sub { font-size: 14px; opacity: .9; }
+
+  /* HUD — elemen diisi Gameplay (hud.js). World hanya menyediakan wadahnya. */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: none; }
+  #hud.active { display: block; }
+  .hud-panel { position: absolute; background: var(--hud-bg); border-radius: 10px; padding: 8px 12px; }
+  #hud-top-left { top: 14px; left: 14px; }
+  #hud-wanted { font-size: 26px; letter-spacing: 4px; color: #ffd27a; }
+  #hud-money { font-size: 20px; font-weight: 700; }
+  #hud-health { font-size: 14px; }
+  #hud-objective { top: 14px; left: 50%; transform: translateX(-50%); max-width: 46vw; text-align: center; font-size: 16px; }
+  #hud-district { top: 64px; left: 50%; transform: translateX(-50%); font-size: 13px; opacity: .85; }
+  #hud-speed { right: 14px; bottom: 14px; font-size: 30px; font-weight: 800; text-align: right; }
+  #hud-speed small { display: block; font-size: 12px; font-weight: 400; }
+  #hud-message { bottom: 90px; left: 50%; transform: translateX(-50%); font-size: 16px; text-align: center; }
+  #minimap-wrap { position: absolute; right: 14px; top: 14px; background: var(--hud-bg); border-radius: 10px; padding: 6px; }
+  #minimap { display: block; width: 190px; height: 190px; border-radius: 6px; }
+  #hud-controls { left: 14px; bottom: 14px; font-size: 12px; line-height: 1.7; opacity: .9; }
+
+  /* Menu — dipakai Gameplay (screens.js): start / pause / akhir. */
+  #menu-screen {
+    position: fixed; inset: 0; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; z-index: 30;
+    background: rgba(20, 12, 10, 0.55); text-align: center;
+  }
+  #menu-screen.active { display: flex; }
+  #menu-screen h2 { margin: 0; font-size: 40px; letter-spacing: 4px; }
+  #menu-screen p { margin: 0; max-width: 520px; font-size: 16px; line-height: 1.6; }
+  #menu-screen button {
+    pointer-events: auto; cursor: pointer; font-size: 18px; font-weight: 700;
+    color: #241408; background: var(--accent); border: 0; border-radius: 10px;
+    padding: 12px 34px;
+  }
+  #error-box {
+    position: fixed; left: 14px; bottom: 14px; z-index: 50; display: none;
+    background: #5a1414; color: #fff; padding: 10px 14px; border-radius: 8px;
+    font-size: 13px; max-width: 60vw;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+
+<div id="loading-screen">
+  <h1>ARUNIKA BAY</h1>
+  <p>Kota pelabuhan Indonesia saat fajar — curi mobil, kabur dari Polair, selesaikan 5 pekerjaan sebelum matahari terbit.</p>
+  <p class="sub">Memuat kota…</p>
+</div>
+
+<div id="hud">
+  <div id="hud-top-left" class="hud-panel">
+    <div id="hud-wanted" aria-label="Wanted level"></div>
+    <div id="hud-money">Rp 0</div>
+    <div id="hud-health">❤ 100</div>
+  </div>
+  <div id="hud-objective" class="hud-panel"></div>
+  <div id="hud-district" class="hud-panel"></div>
+  <div id="minimap-wrap"><canvas id="minimap" width="190" height="190"></canvas></div>
+  <div id="hud-speed" class="hud-panel">0<small>km/jam</small></div>
+  <div id="hud-message" class="hud-panel"></div>
+  <div id="hud-controls" class="hud-panel">
+    WASD jalan &middot; Mouse arah pandang &middot; E masuk/keluar mobil &middot; Shift lari<br>
+    Spasi rem tangan &middot; F interaksi &middot; Esc jeda
+  </div>
+</div>
+
+<div id="menu-screen">
+  <h2>ARUNIKA BAY</h2>
+  <p>Bara Kelana kembali ke kota fajar untuk membebaskan adiknya dari sindikat Ombak Hitam. Lima pekerjaan, satu malam, sebelum matahari terbit.</p>
+  <button id="start-button" type="button">MULAI — KURIR FAJAR</button>
+  <p id="menu-save-note"></p>
+</div>
+
+<!--
+  ARUNIKA BAY — game orisinal total. Tanpa nama/logo/karakter/map/art/
+  musik dari game komersial mana pun. Semua aset prosedural.
+  Tanpa network request: three.js dimuat lokal dari ./vendor/three/,
+  entry game dari ./src/main.js (milik Rewrite-Gameplay).
+  Mode screenshot deterministik Gameplay: ?shot=...&seed=1
+-->
+<div id="error-box" role="alert"></div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

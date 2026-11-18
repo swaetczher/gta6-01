@@ -1,0 +1,9 @@
+out/
+node_modules/
+.DS_Store
+gta6-01-kit/
+*.tar.gz
+*.bin
+# --- akhir .gitignore (baris revisi ditambahkan lewat edit terpisah) ---
+# Revisi terekam: out/ (hasil main.ts) + kit tarball tidak masuk repo.
+
